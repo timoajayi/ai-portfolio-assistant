@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from src.chunking import get_project_overview_chunks
 from src.query_router import is_project_collection_query
@@ -15,6 +15,15 @@ from src.retrieval import retrieve_relevant_chunks
 load_dotenv()
 
 api_key = os.getenv("GOOGLE_API_KEY")
+
+frontend_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "FRONTEND_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
+    if origin.strip()
+]
 
 if not api_key:
     raise ValueError("GOOGLE_API_KEY was not found in the .env file.")
@@ -34,10 +43,7 @@ app = FastAPI(
 # Allow the portfolio frontend to communicate with the API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=frontend_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -46,7 +52,21 @@ app.add_middleware(
 
 # Define the structure of a chat request
 class ChatRequest(BaseModel):
-    message: str
+    message: str = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+    )
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str) -> str:
+        value = value.strip()
+
+        if not value:
+            raise ValueError("Message cannot be empty.")
+
+        return value
 
 
 # Define the structure of a chat response
