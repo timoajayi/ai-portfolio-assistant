@@ -140,6 +140,41 @@ def chunk_portfolio_by_section() -> list[str]:
 
     return chunks
 
+def get_project_overview_chunks() -> list[str]:
+    """
+    Return one representative chunk for each portfolio project.
+
+    Large projects may have several retrieval chunks, so only their
+    overview chunk is included. Smaller projects already exist as a
+    single project chunk.
+    """
+
+    chunks = chunk_portfolio_by_section()
+
+    project_chunks = []
+
+    for chunk in chunks:
+        heading = chunk.split("\n", 1)[0]
+
+        if heading.startswith(
+            "### BundesHost Tourism Forecasting — Overview"
+        ):
+            project_chunks.append(chunk)
+
+        elif heading.startswith(
+            "### Customer Churn Prediction — Overview"
+        ):
+            project_chunks.append(chunk)
+
+        elif heading in {
+            "### AI Project Status Agent",
+            "### AI Creative Studio",
+            "### AI Portfolio Assistant",
+            "### Industrial AI Operations Copilot",
+        }:
+            project_chunks.append(chunk)
+
+    return project_chunks
 
 if __name__ == "__main__":
     portfolio_chunks = chunk_portfolio_by_section()

@@ -149,7 +149,7 @@ During development, evaluation identified a retrieval failure for a question abo
 
 The FastAPI chat endpoint connects retrieval with response generation, creating an end-to-end Retrieval-Augmented Generation pipeline.
 
-The project is still in development. The backend RAG system is functional, while integration with the portfolio website frontend and deployment remain to be completed.
+The project is still in development. The backend RAG system and portfolio website frontend integration are functional, while deployment remains to be completed.
 
 ### Industrial AI Operations Copilot
 
