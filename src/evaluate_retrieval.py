@@ -15,7 +15,7 @@ TEST_CASES = [
         "expected": ["BundesHost Tourism Forecasting"],
     },
     {
-        "question": "Which project did Timothy build independently?",
+        "question": "Which machine learning project did Timothy build independently to predict customer churn?",
         "expected": ["Customer Churn Prediction"],
     },
     {

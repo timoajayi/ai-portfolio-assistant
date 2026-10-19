@@ -96,6 +96,31 @@ Classification threshold tuning was also explored to improve the identification 
 
 A Streamlit application was built to expose churn predictions through an interactive interface.
 
+### AI Project Status Agent
+
+AI Project Status Agent was developed as a solo agentic AI project for answering project-management questions using structured project data.
+
+The application goes beyond a standard chatbot by allowing the language model to dynamically select and call tools based on the user's request.
+
+The agent was built using Python, LangChain, Google Gemini, Streamlit, and structured JSON project data.
+
+The agent has access to dedicated tools for:
+
+- Retrieving project status, ownership, progress, dates, and risks.
+- Retrieving project milestones and milestone status.
+- Retrieving project KPIs, targets, and current values.
+- Retrieving portfolio-level information across multiple projects.
+
+For simple questions, the agent can select and execute a single tool. For more complex requests such as management briefings, it can combine information from multiple tools before generating the final response.
+
+The language model does not directly access the project data. Instead, Python tools retrieve structured information from the project dataset, and the returned tool results are used by the model to generate grounded responses.
+
+A Streamlit interface provides the conversational user experience and also displays which tools were selected by the agent.
+
+Guardrails were added so that factual project claims must be based on information returned by the available tools. Unknown projects and unavailable information are reported rather than invented.
+
+The application was tested across single-tool retrieval, multi-tool orchestration, portfolio-level queries, unknown projects, and unavailable-information scenarios.
+
 ### AI Creative Studio
 
 AI Creative Studio is a generative AI application designed for creating and comparing marketing imagery.
@@ -106,11 +131,25 @@ Users can configure image-generation parameters, generate multiple images, compa
 
 ### AI Portfolio Assistant
 
-The AI Portfolio Assistant is an AI application being developed to allow visitors to ask questions about Timothy's projects, technical skills, experience, and engineering background.
+The AI Portfolio Assistant is a solo AI engineering project being developed to allow portfolio visitors to ask questions about Timothy's projects, technical skills, experience, and engineering background.
 
-The system uses a Python FastAPI backend and a Large Language Model.
+The application uses a Python FastAPI backend and Google Gemini for response generation.
 
-The assistant is being developed toward a grounded architecture where responses are based on portfolio-specific knowledge rather than relying only on general model knowledge.
+Portfolio information is stored as a structured knowledge source and divided into retrieval chunks.
+
+The retrieval system uses a hybrid search architecture combining Gemini semantic embeddings with BM25 lexical retrieval.
+
+Query expansion is used to improve retrieval when a visitor's wording differs from terminology used in the portfolio knowledge.
+
+For each visitor question, the system retrieves the most relevant portfolio chunks and provides them to the language model as context for generating a grounded response.
+
+A retrieval evaluation suite is used to test whether the correct evidence appears within the top retrieved chunks.
+
+During development, evaluation identified a retrieval failure for a question about which project Timothy built independently. Adding BM25 lexical retrieval to the semantic retrieval pipeline improved Recall@3 on the current evaluation set from 87.5 percent to 100 percent.
+
+The FastAPI chat endpoint connects retrieval with response generation, creating an end-to-end Retrieval-Augmented Generation pipeline.
+
+The project is still in development. The backend RAG system is functional, while integration with the portfolio website frontend and deployment remain to be completed.
 
 ### Industrial AI Operations Copilot
 
