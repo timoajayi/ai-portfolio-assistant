@@ -1,14 +1,17 @@
 import os
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.chunking import get_project_overview_chunks
 from src.query_router import is_project_collection_query
 from src.retrieval import retrieve_relevant_chunks
+from src.config import Settings
+from src.provider import ERROR_DETAIL, classify_failure, http_options, response_text
+from src.reliability import ChatControls, ChatProtectionMiddleware
 
 
 # Load environment variables from .env
@@ -30,7 +33,10 @@ if not api_key:
 
 
 # Create Gemini client
-client = genai.Client(api_key=api_key)
+settings = Settings.from_env()
+client = genai.Client(
+    api_key=api_key, http_options=http_options(settings.generation_timeout_ms)
+)
 
 
 # Create FastAPI application
@@ -38,6 +44,9 @@ app = FastAPI(
     title="AI Portfolio Assistant API",
     version="0.1.0",
 )
+
+app.state.chat_controls = ChatControls(settings)
+app.add_middleware(ChatProtectionMiddleware, controls=app.state.chat_controls)
 
 
 # Allow the portfolio frontend to communicate with the API
@@ -47,11 +56,14 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID", "Retry-After"],
 )
 
 
 # Define the structure of a chat request
 class ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     message: str = Field(
         ...,
         min_length=1,
@@ -83,7 +95,10 @@ def health_check():
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest) -> ChatResponse:
+def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
+    lease = http_request.state.chat_capacity
+    if not lease.start():
+        raise HTTPException(status_code=503, detail=ERROR_DETAIL)
     try:
         # Broad project questions need coverage across the portfolio.
         if is_project_collection_query(request.message):
@@ -128,19 +143,21 @@ Visitor question:
         response = client.models.generate_content(
             model="gemini-3.8-flash",
             contents=prompt,
+            config={"max_output_tokens": settings.max_output_tokens},
         )
 
-        answer = response.text
-        if not isinstance(answer, str) or not answer.strip():
-            raise ValueError("The model returned no usable answer.")
-
-        return ChatResponse(answer=answer)
+        return ChatResponse(answer=response_text(response))
 
     except HTTPException:
         raise
 
     except Exception as error:
+        status, category, headers = classify_failure(error)
+        http_request.state.provider_failure = category
         raise HTTPException(
-            status_code=500,
-            detail="The AI assistant could not generate a response.",
+            status_code=status,
+            detail=ERROR_DETAIL,
+            headers=headers,
         ) from error
+    finally:
+        lease.release()

@@ -254,6 +254,104 @@ Example response structure:
 ```
 
 Messages are validated before processing and are limited to 1,000 characters.
+The only accepted JSON field is `message`. Successful responses remain
+`{"answer": "..."}`.
+
+### Reliability and cost controls
+
+All settings below are positive integers, read at startup. Invalid values fail
+startup without echoing the supplied value. Restart after changing settings.
+The generation and embedding models and hybrid retrieval ranking are unchanged.
+
+| Environment variable | Default | Meaning |
+| --- | ---: | --- |
+| `GEMINI_EMBEDDING_TIMEOUT_MS` | 10000 | Embedding HTTP request timeout in milliseconds |
+| `GEMINI_GENERATION_TIMEOUT_MS` | 20000 | Generation HTTP request timeout in milliseconds |
+| `GEMINI_MAX_OUTPUT_TOKENS` | 512 | Maximum generation output tokens |
+| `CHAT_MAX_BODY_BYTES` | 8192 | Maximum chat request body, measured in bytes |
+| `CHAT_MAX_CONCURRENT` | 4 | Admitted chat requests per worker process |
+| `CHAT_RATE_LIMIT_REQUESTS` | 20 | Requests per peer address per fixed window |
+| `CHAT_RATE_LIMIT_WINDOW_SECONDS` | 60 | Fixed-window duration in seconds |
+| `CHAT_RATE_LIMIT_MAX_CLIENTS` | 1024 | Maximum live rate-limit entries per process |
+
+Both Gemini clients explicitly use one total attempt (zero automatic retries).
+This was checked against the installed `google-genai` 2.30.1 SDK: `HttpOptions`
+uses milliseconds, and `HttpRetryOptions.attempts` includes the initial request.
+Embedding timeouts cover startup indexing as well as question embeddings.
+
+**Provider timeouts are not an overall application request deadline.** The SDK
+passes the timeout to its HTTP transport and supplies a server timeout hint.
+Transport phase/inactivity timeouts do not promise a strict wall-clock deadline.
+A focused question performs embedding followed by generation, plus local work.
+Body upload and thread-pool scheduling are outside the provider timeout. There
+is no new overall application deadline in this phase. Configure upload, header,
+connection, and overall request limits at the deployment ingress as well.
+Cancelling a request cannot forcibly terminate an already running synchronous
+SDK call; its concurrency slot remains held until that worker finishes.
+
+Admission uses a non-blocking bounded semaphore; saturated requests are rejected
+immediately rather than queued. Rate limiting uses connection peer addresses,
+monotonic fixed windows, and bounded memory. Attempts count even if later
+rejected by validation or concurrency limits. Expired entries are removed;
+when the client table is full, new peers receive 503 instead of evicting live
+entries and bypassing the limit. Fixed windows permit bursts around a reset.
+Body bytes are counted from ASGI receive frames before JSON parsing, including
+requests without Content-Length or with a misleading smaller value. Declared
+oversized bodies are rejected early. Admission covers upload/parsing too, so
+slow uploads occupy slots and need an ingress upload deadline.
+
+The app never reads `X-Forwarded-For`, `Forwarded`, or similar headers to choose
+a rate-limit identity. It uses the ASGI connection peer. Run Uvicorn with
+`--no-proxy-headers` unless you have explicitly established trusted proxies;
+otherwise the server itself may rewrite the peer before the app receives it.
+Behind an untrusted/unconfigured proxy, users share its peer bucket. To enable
+forwarding later, trust only known proxy addresses at the server and require
+that proxy to replace visitor-supplied forwarding headers. Do not trust `*`.
+
+Concurrency and rate limits are **process-local**, reset on restart, and multiply
+with worker/instance count. They are not a global spending cap or distributed
+abuse defense. Set provider quotas/billing controls and deployment-wide ingress
+limits before exposing the service publicly; distributed peers can each use
+their own bucket. No Redis, database, authentication service, or dependency was
+added for these controls.
+
+| HTTP status | Meaning |
+| --- | --- |
+| 400 | Invalid or duplicate Content-Length |
+| 413 | Request body exceeds the byte limit |
+| 422 | Invalid JSON, message, or unexpected JSON fields |
+| 429 | Local peer rate limit reached; `Retry-After` gives remaining window seconds |
+| 503 | Chat capacity/client table exhausted, or provider quota reached |
+| 504 | Embedding or generation timed out |
+| 502 | Empty/blocked model output, provider transport failure, or SDK API error |
+| 500 | Unexpected internal failure |
+
+Provider failures retain the safe body
+`{"detail": "The AI assistant could not generate a response."}`.
+Local protective rejections also use a `detail` string. Capacity rejections
+suggest retrying after one second, a full client table reports its earliest
+expiry, and provider quota failures conservatively suggest 60 seconds. These
+values are hints; clients should back off and avoid indefinite automatic retries.
+
+Operational JSON logs go to stderr via the `portfolio.api` logger. Each entry
+contains a generated request ID, HTTP status, duration in milliseconds, and a
+provider failure category when applicable. It does not log visitor messages,
+portfolio context, prompts, exception text, keys, or authorization headers.
+`X-Request-ID` is generated by the app rather than trusted from the visitor;
+it and `Retry-After` are exposed to permitted CORS origins. Disconnects before
+the handler starts and cancelled requests are logged as 499. Deployments
+should retain these minimal logs and avoid enabling SDK HTTP debug logging.
+
+The offline regression suite exercises body streaming, rate resets, concurrent
+admission, provider policies, safe errors, and logging without contacting Gemini:
+
+```sh
+.venv/bin/python -B -m unittest discover -s tests -v
+```
+
+Compared with Phase 2A, tests now require 422 for extra fields, 504 for provider
+timeouts, and 502 for empty/blocked responses. These assertions enforce the new
+error policy; successful response schemas and existing test scenarios remain.
 
 ---
 
@@ -391,7 +489,7 @@ Do not commit `.env` or API keys to Git.
 ### 4. Start the API
 
 ```bash
-uv run uvicorn src.api:app --reload
+uv run uvicorn src.api:app --reload --no-proxy-headers
 ```
 
 The API will be available at:

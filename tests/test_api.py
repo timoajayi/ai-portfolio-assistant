@@ -13,8 +13,8 @@ class APITestCase(OfflineTestCase):
         self.http = self.stack.enter_context(TestClient(self.api.app))
         self.models.embed_content.reset_mock()
 
-    def assert_generic_error(self, response):
-        self.assertEqual(response.status_code, 500)
+    def assert_generic_error(self, response, status=500):
+        self.assertEqual(response.status_code, status)
         self.assertEqual(response.json(), {
             "detail": "The AI assistant could not generate a response."
         })
@@ -69,11 +69,11 @@ class APIValidationTests(APITestCase):
         self.models.generate_content.assert_not_called()
         self.models.embed_content.assert_not_called()
 
-    def test_extra_fields_preserve_current_contract(self):
-        # Phase 1 deliberately preserves Pydantic's current extra-field policy.
+    def test_extra_fields_are_rejected_before_provider_calls(self):
         response = self.http.post("/chat", json={"message": "Docker?", "extra": "ignored"})
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"answer": "Offline test answer."})
+        self.assertEqual(response.status_code, 422)
+        self.models.generate_content.assert_not_called()
+        self.models.embed_content.assert_not_called()
 
     def test_health_does_not_call_provider(self):
         response = self.http.get("/health")
@@ -96,20 +96,20 @@ class APIErrorTests(APITestCase):
         self.assert_generic_error(response)
         self.models.generate_content.assert_not_called()
 
-    def test_provider_timeout_preserves_current_error_contract(self):
+    def test_provider_timeout_returns_gateway_timeout_with_safe_error(self):
         self.models.generate_content.side_effect = TimeoutError("mock timeout")
-        self.assert_generic_error(self.http.post("/chat", json={"message": "Docker?"}))
+        self.assert_generic_error(self.http.post("/chat", json={"message": "Docker?"}), 504)
 
     def test_absent_model_text_returns_error(self):
         self.models.generate_content.return_value = SimpleNamespace(text=None, candidates=[])
-        self.assert_generic_error(self.http.post("/chat", json={"message": "Docker?"}))
+        self.assert_generic_error(self.http.post("/chat", json={"message": "Docker?"}), 502)
 
     def test_safety_blocked_response_returns_error(self):
         self.models.generate_content.return_value = SimpleNamespace(
             text=None, candidates=[],
             prompt_feedback=SimpleNamespace(block_reason="SAFETY"),
         )
-        self.assert_generic_error(self.http.post("/chat", json={"message": "Docker?"}))
+        self.assert_generic_error(self.http.post("/chat", json={"message": "Docker?"}), 502)
 
     def test_collection_route_uses_overviews_without_query_embedding(self):
         with patch.object(self.api, "get_project_overview_chunks", return_value=["Project overview"]):
@@ -121,12 +121,12 @@ class APIErrorTests(APITestCase):
 
 
 class KnownAPIResponseRegressionTests(APITestCase):
-    """No new response schema/status policy: require the existing generic error."""
+    """Phase 2B uses 502 for unusable upstream output and preserves safe detail."""
 
     def test_empty_string_model_response_is_not_a_successful_answer(self):
         self.models.generate_content.return_value = SimpleNamespace(text="")
-        self.assert_generic_error(self.http.post("/chat", json={"message": "Docker?"}))
+        self.assert_generic_error(self.http.post("/chat", json={"message": "Docker?"}), 502)
 
     def test_whitespace_model_response_is_not_a_successful_answer(self):
         self.models.generate_content.return_value = SimpleNamespace(text=" \n\t ")
-        self.assert_generic_error(self.http.post("/chat", json={"message": "Docker?"}))
+        self.assert_generic_error(self.http.post("/chat", json={"message": "Docker?"}), 502)

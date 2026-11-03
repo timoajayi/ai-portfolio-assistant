@@ -49,6 +49,14 @@ class OfflineTestCase(unittest.TestCase):
         self.stack.enter_context(patch.dict(os.environ, {
             "GOOGLE_API_KEY": "offline-test-key-not-a-secret",
             "FRONTEND_ORIGINS": "http://localhost:3000",
+            "GEMINI_EMBEDDING_TIMEOUT_MS": "10000",
+            "GEMINI_GENERATION_TIMEOUT_MS": "20000",
+            "GEMINI_MAX_OUTPUT_TOKENS": "512",
+            "CHAT_MAX_BODY_BYTES": "8192",
+            "CHAT_MAX_CONCURRENT": "4",
+            "CHAT_RATE_LIMIT_REQUESTS": "20",
+            "CHAT_RATE_LIMIT_WINDOW_SECONDS": "60",
+            "CHAT_RATE_LIMIT_MAX_CLIENTS": "1024",
         }))
         # Never read the developer's .env file during tests.
         self.dotenv = self.stack.enter_context(patch(

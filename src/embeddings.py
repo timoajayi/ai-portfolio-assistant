@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 from google import genai
 
 from src.chunking import chunk_portfolio_by_section
+from src.config import Settings
+from src.provider import http_options
 
 
 load_dotenv()
@@ -13,7 +15,10 @@ api_key = os.getenv("GOOGLE_API_KEY")
 if not api_key:
     raise ValueError("GOOGLE_API_KEY was not found in the .env file.")
 
-client = genai.Client(api_key=api_key)
+settings = Settings.from_env()
+client = genai.Client(
+    api_key=api_key, http_options=http_options(settings.embedding_timeout_ms)
+)
 
 
 def create_embedding(

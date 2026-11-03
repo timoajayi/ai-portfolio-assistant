@@ -25,7 +25,11 @@ class OfflineIsolationTests(OfflineTestCase):
 
     def test_import_time_embeddings_use_only_fake_client(self):
         retrieval = self.load("src.retrieval")
-        self.client_factory.assert_called_once_with(api_key="offline-test-key-not-a-secret")
+        self.client_factory.assert_called_once()
+        options = self.client_factory.call_args.kwargs
+        self.assertEqual(options["api_key"], "offline-test-key-not-a-secret")
+        self.assertEqual(options["http_options"].timeout, 10000)
+        self.assertEqual(options["http_options"].retry_options.attempts, 1)
         self.assertEqual(self.models.embed_content.call_count, len(retrieval.PORTFOLIO_INDEX))
         self.assertGreater(len(retrieval.PORTFOLIO_INDEX), 0)
         for guard in self.network_guards:
