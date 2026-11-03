@@ -1,3 +1,6 @@
+import re
+
+
 QUERY_EXPANSIONS = {
     "independently": [
         "solo project",
@@ -21,7 +24,7 @@ def expand_query(question: str) -> str:
     question_lower = question.lower()
 
     for term, expansions in QUERY_EXPANSIONS.items():
-        if term in question_lower:
+        if re.search(r"\b" + re.escape(term) + r"\b", question_lower):
             expanded_terms.extend(expansions)
 
     if not expanded_terms:

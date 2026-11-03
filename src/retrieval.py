@@ -10,6 +10,9 @@ def cosine_similarity(
     vector_a: list[float],
     vector_b: list[float],
 ) -> float:
+    if len(vector_a) != len(vector_b):
+        raise ValueError("Embedding dimensions must match.")
+
     dot_product = sum(
         a * b for a, b in zip(vector_a, vector_b)
     )
@@ -46,6 +49,8 @@ def build_bm25_index(chunks: list[str]) -> dict:
     average_document_length = (
         sum(len(tokens) for tokens in tokenized_chunks)
         / len(tokenized_chunks)
+        if tokenized_chunks
+        else 0.0
     )
 
     return {
@@ -175,6 +180,12 @@ def retrieve_relevant_chunks(
     question: str,
     top_k: int = 3,
 ) -> list[tuple[str, float]]:
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 0:
+        raise ValueError("top_k must be a non-negative integer.")
+
+    if top_k == 0 or not PORTFOLIO_INDEX:
+        return []
+
     expanded_question = expand_query(question)
 
     question_embedding = create_embedding(

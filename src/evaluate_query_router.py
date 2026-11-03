@@ -37,7 +37,7 @@ TEST_CASES = [
 ]
 
 
-def evaluate_query_router() -> None:
+def evaluate_query_router() -> int:
     passed = 0
 
     for index, test_case in enumerate(TEST_CASES, start=1):
@@ -66,6 +66,8 @@ def evaluate_query_router() -> None:
     print(f"Passed: {passed}/{total}")
     print(f"Accuracy: {(passed / total) * 100:.2f}%")
 
+    return 0 if passed == total else 1
+
 
 if __name__ == "__main__":
-    evaluate_query_router()
+    raise SystemExit(evaluate_query_router())

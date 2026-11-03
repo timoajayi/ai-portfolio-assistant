@@ -45,7 +45,7 @@ TEST_CASES = [
 ]
 
 
-def evaluate_retrieval(top_k: int = 3) -> None:
+def evaluate_retrieval(top_k: int = 3) -> int:
     passed = 0
 
     for index, test_case in enumerate(TEST_CASES, start=1):
@@ -94,6 +94,8 @@ def evaluate_retrieval(top_k: int = 3) -> None:
     print(f"Passed: {passed}/{total}")
     print(f"Recall@{top_k}: {passed / total:.2%}")
 
+    return 0 if passed == total else 1
+
 
 if __name__ == "__main__":
-    evaluate_retrieval()
+    raise SystemExit(evaluate_retrieval())

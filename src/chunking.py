@@ -15,6 +15,9 @@ def split_large_project(project_section: str) -> list[str]:
     project_title = lines[0].replace("### ", "").strip()
     content = "\n".join(lines[1:]).strip()
 
+    if not content:
+        return []
+
     # Customer Churn has several distinct retrieval topics
     if project_title == "Customer Churn Prediction":
         paragraphs = [
@@ -28,18 +31,13 @@ def split_large_project(project_section: str) -> list[str]:
         application = "\n\n".join(paragraphs[7:])
 
         return [
-            (
-                f"### {project_title} — Overview\n\n"
-                f"{overview}"
-            ),
-            (
-                f"### {project_title} — Modeling\n\n"
-                f"{modeling}"
-            ),
-            (
-                f"### {project_title} — Application\n\n"
-                f"{application}"
-            ),
+            f"### {project_title} — {label}\n\n{body}"
+            for label, body in (
+                ("Overview", overview),
+                ("Modeling", modeling),
+                ("Application", application),
+            )
+            if body.strip()
         ]
 
     # BundesHost also contains several distinct retrieval topics
@@ -51,23 +49,18 @@ def split_large_project(project_section: str) -> list[str]:
         ]
 
         overview = "\n\n".join(paragraphs[:3])
-        infrastructure = paragraphs[3]
+        infrastructure = "\n\n".join(paragraphs[3:4])
 
         contributions = "\n\n".join(paragraphs[4:])
 
         return [
-            (
-                f"### {project_title} — Overview\n\n"
-                f"{overview}"
-            ),
-            (
-                f"### {project_title} — Infrastructure\n\n"
-                f"{infrastructure}"
-            ),
-            (
-                f"### {project_title} — Timothy's Contributions\n\n"
-                f"{contributions}"
-            ),
+            f"### {project_title} — {label}\n\n{body}"
+            for label, body in (
+                ("Overview", overview),
+                ("Infrastructure", infrastructure),
+                ("Timothy's Contributions", contributions),
+            )
+            if body.strip()
         ]
 
     # Smaller projects remain as a single chunk
@@ -149,30 +142,17 @@ def get_project_overview_chunks() -> list[str]:
     single project chunk.
     """
 
-    chunks = chunk_portfolio_by_section()
-
     project_chunks = []
 
-    for chunk in chunks:
-        heading = chunk.split("\n", 1)[0]
+    # Discover projects from their section rather than a fixed title allowlist.
+    for section in load_portfolio_knowledge().split("\n## ")[1:]:
+        if section.split("\n", 1)[0].strip() != "Projects":
+            continue
 
-        if heading.startswith(
-            "### BundesHost Tourism Forecasting — Overview"
-        ):
-            project_chunks.append(chunk)
-
-        elif heading.startswith(
-            "### Customer Churn Prediction — Overview"
-        ):
-            project_chunks.append(chunk)
-
-        elif heading in {
-            "### AI Project Status Agent",
-            "### AI Creative Studio",
-            "### AI Portfolio Assistant",
-            "### Industrial AI Operations Copilot",
-        }:
-            project_chunks.append(chunk)
+        for project_section in section.split("\n### ")[1:]:
+            chunks = split_large_project("### " + project_section.strip())
+            if chunks:
+                project_chunks.append(chunks[0])
 
     return project_chunks
 

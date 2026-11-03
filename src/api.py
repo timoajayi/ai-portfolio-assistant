@@ -130,9 +130,11 @@ Visitor question:
             contents=prompt,
         )
 
-        return ChatResponse(
-            answer=response.text
-        )
+        answer = response.text
+        if not isinstance(answer, str) or not answer.strip():
+            raise ValueError("The model returned no usable answer.")
+
+        return ChatResponse(answer=answer)
 
     except HTTPException:
         raise
