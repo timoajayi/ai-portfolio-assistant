@@ -11,6 +11,8 @@ from uuid import uuid4
 from starlette.responses import JSONResponse
 
 from src.config import Settings
+from src.diagnostics import ChatDiagnostics, current_diagnostics
+from src.provider import ERROR_DETAIL
 
 
 logger = logging.getLogger("portfolio.api")
@@ -54,6 +56,7 @@ class ChatControls:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.capacity = BoundedSemaphore(settings.max_concurrent)
+        self.tasks = set()
         self.rate_limiter = RateLimiter(
             settings.rate_requests, settings.rate_window_seconds, settings.rate_max_clients
         )
@@ -62,24 +65,42 @@ class ChatControls:
 class CapacityLease:
     """Retain a slot until an already-started sync provider worker finishes."""
 
-    def __init__(self, capacity):
+    def __init__(self, capacity, operation_owned=False):
         self.capacity = capacity
         self.lock = Lock()
         self.started = False
         self.released = False
+        self.aborted = False
+        self.worker_finished = False
+        self.operation_finished = not operation_owned
 
     def start(self):
         with self.lock:
-            if self.released:
+            if self.released or self.aborted:
                 return False
             self.started = True
             return True
 
     def release(self, idle_only=False):
         with self.lock:
-            if not self.released and (not idle_only or not self.started):
-                self.released = True
-                self.capacity.release()
+            if not idle_only or not self.started:
+                self.worker_finished = True
+                self._release_if_finished()
+
+    def abort(self):
+        with self.lock:
+            self.aborted = True
+
+    def finish_operation(self):
+        with self.lock:
+            self.operation_finished = True
+            self._release_if_finished()
+
+    def _release_if_finished(self):
+        if (not self.released and self.operation_finished
+                and (not self.started or self.worker_finished)):
+            self.released = True
+            self.capacity.release()
 
 
 class ChatProtectionMiddleware:
@@ -96,6 +117,9 @@ class ChatProtectionMiddleware:
         started = time.monotonic()
         status = 500
         lease = None
+        task = None
+        diagnostics = None
+        accept_response = True
         state = scope.setdefault("state", {})
         state["request_id"] = request_id
 
@@ -118,6 +142,8 @@ class ChatProtectionMiddleware:
         try:
             # Include the redirect alias so /chat/ cannot bypass protection.
             if scope["method"] == "POST" and scope["path"] in ("/chat", "/chat/"):
+                diagnostics = ChatDiagnostics(started, self.controls.settings.chat_deadline_seconds)
+                state["chat_diagnostics"] = diagnostics
                 peer = scope.get("client")
                 # ASGI peer only. Forwarding-header trust belongs at the server.
                 peer = peer[0] if peer else "unknown"
@@ -128,7 +154,7 @@ class ChatProtectionMiddleware:
                 if not self.controls.capacity.acquire(blocking=False):
                     await reject(503, "The AI assistant is busy. Please try again later.", 1)
                     return
-                lease = CapacityLease(self.controls.capacity)
+                lease = CapacityLease(self.controls.capacity, operation_owned=True)
                 state["chat_capacity"] = lease
 
                 limit = self.controls.settings.max_body_bytes
@@ -146,44 +172,109 @@ class ChatProtectionMiddleware:
                         await reject(413, "Request body too large.")
                         return
 
-                body = bytearray()
-                while True:
-                    message = await receive()
-                    if message["type"] == "http.disconnect":
-                        status = 499  # Operational log only; peer has gone away.
-                        return
-                    chunk = message.get("body", b"")
-                    if len(body) + len(chunk) > limit:
-                        await reject(413, "Request body too large.")
-                        return
-                    body.extend(chunk)
-                    if not message.get("more_body", False):
-                        break
+                response_messages = []
 
-                delivered = False
+                async def capture_send(message):
+                    # Do not commit headers until response preparation finishes.
+                    # In particular, never forward a late 200 after a 504.
+                    if accept_response:
+                        response_messages.append(message)
 
-                async def replay_body():
-                    nonlocal delivered
-                    if not delivered:
-                        delivered = True
-                        return {"type": "http.request", "body": bytes(body), "more_body": False}
-                    return await receive()
+                async def run_operation():
+                    nonlocal status
+                    token = current_diagnostics.set(diagnostics)
+                    try:
+                        body = bytearray()
+                        while True:
+                            message = await receive()
+                            if message["type"] == "http.disconnect":
+                                status = 499
+                                return
+                            chunk = message.get("body", b"")
+                            if len(body) + len(chunk) > limit:
+                                await JSONResponse({"detail": "Request body too large."}, status_code=413)(
+                                    scope, receive, capture_send
+                                )
+                                return
+                            body.extend(chunk)
+                            if not message.get("more_body", False):
+                                break
+                        diagnostics.admitted()
+                        delivered = False
 
-                await self.app(scope, replay_body, tracked_send)
+                        async def replay_body():
+                            nonlocal delivered
+                            if not delivered:
+                                delivered = True
+                                return {"type": "http.request", "body": bytes(body), "more_body": False}
+                            return await receive()
+
+                        await self.app(scope, replay_body, capture_send)
+                    finally:
+                        current_diagnostics.reset(token)
+
+                task = asyncio.create_task(run_operation())
+                self.controls.tasks.add(task)
+
+                def operation_done(completed):
+                    self.controls.tasks.discard(completed)
+                    lease.finish_operation()
+                    # Consume abandoned exceptions without logging provider data.
+                    if not completed.cancelled():
+                        completed.exception()
+
+                task.add_done_callback(operation_done)
+                remaining = max(0.0, diagnostics.deadline - time.monotonic())
+                done, _ = await asyncio.wait({task}, timeout=remaining)
+                if not done or time.monotonic() >= diagnostics.deadline:
+                    accept_response = False
+                    diagnostics.stop()
+                    state["provider_failure"] = "deadline"
+                    lease.abort()
+                    task.cancel()
+                    # Deliberately do not await cancellation: AnyIO/sync worker
+                    # completion must not postpone this response.
+                    await reject(504, ERROR_DETAIL)
+                    return
+                try:
+                    task.result()
+                except Exception:
+                    state["provider_failure"] = "unexpected"
+                    await reject(500, ERROR_DETAIL)
+                    return
+                for message in response_messages:
+                    await tracked_send(message)
             else:
                 await self.app(scope, receive, tracked_send)
         except asyncio.CancelledError:
             status = 499
+            accept_response = False
+            if diagnostics is not None:
+                diagnostics.stop()
+            if lease is not None:
+                lease.abort()
+            if task is not None:
+                task.cancel()
             raise
         finally:
-            # Validation/body errors release here. A started synchronous handler
-            # owns its lease even if the surrounding ASGI task is cancelled.
-            if lease is not None:
-                lease.release(idle_only=True)
-            logger.info(json.dumps({
+            # With a task, its completion callback owns operation cleanup.
+            # A cancelled task may finish before its synchronous worker does.
+            if lease is not None and task is None:
+                lease.finish_operation()
+            payload = {
                 "event": "http_request",
                 "request_id": request_id,
                 "status": status,
                 "duration_ms": round((time.monotonic() - started) * 1000, 2),
                 "provider_failure": state.get("provider_failure"),
-            }))
+            }
+            if diagnostics is not None:
+                payload["phase_timings_ms"], payload["active_phase"] = diagnostics.snapshot()
+                generation = diagnostics.generation_snapshot()
+                if generation is not None:
+                    payload["generation"] = generation
+                if status not in (504, 499):
+                    payload["active_phase"] = None
+                if status == 504 and diagnostics.stopped:
+                    payload["provider_failure"] = "deadline"
+            logger.info(json.dumps(payload))

@@ -1,4 +1,6 @@
-from src.retrieval import retrieve_relevant_chunks
+from src.retrieval import retrieve_relevant_chunks, initialize_index
+from src.config import Settings
+from src.index_store import IndexValidationError
 
 
 TEST_CASES = [
@@ -46,6 +48,11 @@ TEST_CASES = [
 
 
 def evaluate_retrieval(top_k: int = 3) -> int:
+    try:
+        initialize_index(Settings.from_env().index_path)
+    except IndexValidationError as error:
+        print(f"Retrieval evaluation unavailable: {error.code}. Run python -m src.ingest first.")
+        return 1
     passed = 0
 
     for index, test_case in enumerate(TEST_CASES, start=1):

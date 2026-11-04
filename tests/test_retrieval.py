@@ -51,6 +51,12 @@ class RetrievalTests(OfflineTestCase):
             embed.assert_called_with("docker", task_type="RETRIEVAL_QUERY")
 
     def test_index_creation_uses_mocked_document_embeddings(self):
+        # This utility test intentionally uses tiny synthetic vectors, without
+        # serializing them as a production index with fixed dimensions.
+        from types import SimpleNamespace
+        self.models.embed_content.return_value = SimpleNamespace(
+            embeddings=[SimpleNamespace(values=[1.0, 0.0])]
+        )
         with patch.object(self.retrieval, "chunk_portfolio_by_section", return_value=["one", "two"]):
             self.models.embed_content.reset_mock()
             index = self.retrieval.build_portfolio_index()

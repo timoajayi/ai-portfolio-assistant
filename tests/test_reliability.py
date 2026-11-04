@@ -209,7 +209,7 @@ class ConcurrencyTests(ReliabilityTestCase):
             entered.set()
             if not finish.wait(5):
                 raise AssertionError("Test failed to release the fake provider")
-            return SimpleNamespace(text="Done")
+            return SimpleNamespace(text="Done", candidates=[SimpleNamespace(finish_reason="STOP")])
 
         self.models.generate_content.side_effect = slow_generation
         with ThreadPoolExecutor(max_workers=1) as pool:
@@ -258,7 +258,7 @@ class ConcurrencyTests(ReliabilityTestCase):
             entered.set()
             if not finish.wait(5):
                 raise AssertionError("Fake provider was not released")
-            return SimpleNamespace(text="Done")
+            return SimpleNamespace(text="Done", candidates=[SimpleNamespace(finish_reason="STOP")])
 
         self.models.generate_content.side_effect = generation
 
@@ -323,6 +323,9 @@ class ConcurrencyTests(ReliabilityTestCase):
 
 class ProviderPolicyTests(ReliabilityTestCase):
     def test_explicit_transport_timeouts_and_no_automatic_retries(self):
+        # Client construction is now lazy; inspect policies after actual use.
+        self.client_factory.assert_not_called()
+        self.assertEqual(self.post().status_code, 200)
         calls = self.client_factory.call_args_list
         self.assertEqual(len(calls), 2)
         self.assertEqual([c.kwargs["http_options"].timeout for c in calls], [10000, 20000])
@@ -332,7 +335,8 @@ class ProviderPolicyTests(ReliabilityTestCase):
         self.post()
         arguments = self.models.generate_content.call_args.kwargs
         self.assertEqual(arguments["model"], "gemini-3.8-flash")
-        self.assertEqual(arguments["config"]["max_output_tokens"], 512)
+        self.assertEqual(arguments["config"]["max_output_tokens"], 1024)
+        self.assertEqual(arguments["config"]["thinking_config"]["thinking_level"], "LOW")
 
     def test_generation_and_embedding_transport_timeouts_are_sanitized(self):
         for operation in (self.models.generate_content, self.models.embed_content):
@@ -377,7 +381,9 @@ class ProviderPolicyTests(ReliabilityTestCase):
     def test_empty_and_whitespace_provider_responses_return_safe_error(self):
         for text in (None, "", " \n\t "):
             with self.subTest(text=repr(text)):
-                self.models.generate_content.return_value = SimpleNamespace(text=text)
+                self.models.generate_content.return_value = SimpleNamespace(
+                    text=text, candidates=[SimpleNamespace(finish_reason="STOP")],
+                )
                 response = self.post()
                 self.assertEqual(response.status_code, 502)
                 self.assertEqual(response.json(), {"detail": ERROR_DETAIL})
@@ -391,19 +397,20 @@ class ConfigurationTests(OfflineTestCase):
             "GEMINI_MAX_OUTPUT_TOKENS": "321",
         }):
             api = self.load("src.api")
+        self.client_factory.assert_not_called()
+        with TestClient(api.app) as client:
+            self.assertEqual(client.post("/chat", json={"message": "Docker?"}).status_code, 200)
         calls = self.client_factory.call_args_list
         self.assertEqual(len(calls), 2)
         self.assertEqual([c.kwargs["http_options"].timeout for c in calls], [1234, 5678])
         self.assertTrue(all(c.kwargs["http_options"].retry_options.attempts == 1 for c in calls))
-        with TestClient(api.app) as client:
-            self.assertEqual(client.post("/chat", json={"message": "Docker?"}).status_code, 200)
         self.assertEqual(self.models.generate_content.call_args.kwargs["config"]["max_output_tokens"], 321)
 
     def test_every_control_has_validated_positive_integer_configuration(self):
         defaults = {
             "GEMINI_EMBEDDING_TIMEOUT_MS": ("embedding_timeout_ms", 10000),
             "GEMINI_GENERATION_TIMEOUT_MS": ("generation_timeout_ms", 20000),
-            "GEMINI_MAX_OUTPUT_TOKENS": ("max_output_tokens", 512),
+            "GEMINI_MAX_OUTPUT_TOKENS": ("max_output_tokens", 1024),
             "CHAT_MAX_BODY_BYTES": ("max_body_bytes", 8192),
             "CHAT_MAX_CONCURRENT": ("max_concurrent", 4),
             "CHAT_RATE_LIMIT_REQUESTS": ("rate_requests", 20),
@@ -433,7 +440,8 @@ class LoggingTests(ReliabilityTestCase):
             })
         info.assert_called_once()
         payload = json.loads(info.call_args.args[0])
-        self.assertEqual(set(payload), {"event", "request_id", "status", "duration_ms", "provider_failure"})
+        self.assertEqual(set(payload), {"event", "request_id", "status", "duration_ms", "provider_failure", "phase_timings_ms", "active_phase"})
+        self.assertTrue(all(value >= 0 for value in payload["phase_timings_ms"].values()))
         self.assertEqual(payload["status"], 500)
         self.assertEqual(payload["provider_failure"], "unexpected")
         self.assertGreaterEqual(payload["duration_ms"], 0)

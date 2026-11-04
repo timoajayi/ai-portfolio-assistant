@@ -124,9 +124,13 @@ class KnownAPIResponseRegressionTests(APITestCase):
     """Phase 2B uses 502 for unusable upstream output and preserves safe detail."""
 
     def test_empty_string_model_response_is_not_a_successful_answer(self):
-        self.models.generate_content.return_value = SimpleNamespace(text="")
+        self.models.generate_content.return_value = SimpleNamespace(
+            text="", candidates=[SimpleNamespace(finish_reason="STOP")],
+        )
         self.assert_generic_error(self.http.post("/chat", json={"message": "Docker?"}), 502)
 
     def test_whitespace_model_response_is_not_a_successful_answer(self):
-        self.models.generate_content.return_value = SimpleNamespace(text=" \n\t ")
+        self.models.generate_content.return_value = SimpleNamespace(
+            text=" \n\t ", candidates=[SimpleNamespace(finish_reason="STOP")],
+        )
         self.assert_generic_error(self.http.post("/chat", json={"message": "Docker?"}), 502)

@@ -8,8 +8,11 @@ test so mocked clients cannot escape into other tests in the same process.
 from contextlib import ExitStack, redirect_stdout
 import importlib
 import io
+import json
 import os
+from pathlib import Path
 import sys
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -21,6 +24,7 @@ ISOLATED_MODULES = (
     "src.api",
     "src.evaluate_query_router",
     "src.evaluate_retrieval",
+    "src.ingest",
 )
 MISSING = object()
 
@@ -46,17 +50,31 @@ class OfflineTestCase(unittest.TestCase):
             ))
             self.network_guards.append(guard)
 
+        # Synthetic artifacts live only in temporary directories. Fixture
+        # creation never calls ingestion or any embedding provider.
+        self.temporary = self.stack.enter_context(TemporaryDirectory())
+        self.index_path = Path(self.temporary) / "portfolio.json"
+        from src.index_store import EMBEDDING_DIMENSIONS, make_payload, source_snapshot
+        source = source_snapshot()
+        self.vector = [1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 1)
+        payload = make_payload(source, [self.vector.copy() for _ in source.chunks])
+        self.index_path.write_text(json.dumps(payload), encoding="utf-8")
+
         self.stack.enter_context(patch.dict(os.environ, {
             "GOOGLE_API_KEY": "offline-test-key-not-a-secret",
             "FRONTEND_ORIGINS": "http://localhost:3000",
             "GEMINI_EMBEDDING_TIMEOUT_MS": "10000",
             "GEMINI_GENERATION_TIMEOUT_MS": "20000",
-            "GEMINI_MAX_OUTPUT_TOKENS": "512",
+            "GEMINI_NETWORK_POLICY": "auto",
+            "GEMINI_MAX_OUTPUT_TOKENS": "1024",
+            "GEMINI_THINKING_LEVEL": "LOW",
             "CHAT_MAX_BODY_BYTES": "8192",
             "CHAT_MAX_CONCURRENT": "4",
             "CHAT_RATE_LIMIT_REQUESTS": "20",
             "CHAT_RATE_LIMIT_WINDOW_SECONDS": "60",
             "CHAT_RATE_LIMIT_MAX_CLIENTS": "1024",
+            "CHAT_DEADLINE_SECONDS": "40",
+            "RAG_INDEX_PATH": str(self.index_path),
         }))
         # Never read the developer's .env file during tests.
         self.dotenv = self.stack.enter_context(patch(
@@ -64,10 +82,11 @@ class OfflineTestCase(unittest.TestCase):
         ))
         self.models = Mock(spec_set=["embed_content", "generate_content"])
         self.models.embed_content.return_value = SimpleNamespace(
-            embeddings=[SimpleNamespace(values=[1.0, 0.0])]
+            embeddings=[SimpleNamespace(values=self.vector.copy())]
         )
         self.models.generate_content.return_value = SimpleNamespace(
-            text="Offline test answer."
+            text="Offline test answer.",
+            candidates=[SimpleNamespace(finish_reason="STOP")],
         )
         self.provider = Mock(spec_set=["models", "close"])
         self.provider.models = self.models

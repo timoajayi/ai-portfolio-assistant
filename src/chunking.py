@@ -67,8 +67,9 @@ def split_large_project(project_section: str) -> list[str]:
     return [project_section]
 
 
-def chunk_portfolio_by_section() -> list[str]:
-    portfolio_text = load_portfolio_knowledge()
+def chunk_portfolio_by_section(portfolio_text: str | None = None) -> list[str]:
+    if portfolio_text is None:
+        portfolio_text = load_portfolio_knowledge()
 
     main_sections = portfolio_text.split("\n## ")
 
@@ -133,7 +134,7 @@ def chunk_portfolio_by_section() -> list[str]:
 
     return chunks
 
-def get_project_overview_chunks() -> list[str]:
+def get_project_overview_chunks(portfolio_text: str | None = None) -> list[str]:
     """
     Return one representative chunk for each portfolio project.
 
@@ -144,8 +145,11 @@ def get_project_overview_chunks() -> list[str]:
 
     project_chunks = []
 
+    if portfolio_text is None:
+        portfolio_text = load_portfolio_knowledge()
+
     # Discover projects from their section rather than a fixed title allowlist.
-    for section in load_portfolio_knowledge().split("\n## ")[1:]:
+    for section in portfolio_text.split("\n## ")[1:]:
         if section.split("\n", 1)[0].strip() != "Projects":
             continue
 

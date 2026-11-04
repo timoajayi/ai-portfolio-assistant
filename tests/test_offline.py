@@ -23,23 +23,23 @@ class OfflineIsolationTests(OfflineTestCase):
             with self.assertRaisesRegex(AssertionError, "Network disabled"):
                 client.get("https://offline.invalid")
 
-    def test_import_time_embeddings_use_only_fake_client(self):
+    def test_importing_retrieval_does_not_embed_or_load_documents(self):
         retrieval = self.load("src.retrieval")
-        self.client_factory.assert_called_once()
-        options = self.client_factory.call_args.kwargs
-        self.assertEqual(options["api_key"], "offline-test-key-not-a-secret")
-        self.assertEqual(options["http_options"].timeout, 10000)
-        self.assertEqual(options["http_options"].retry_options.attempts, 1)
-        self.assertEqual(self.models.embed_content.call_count, len(retrieval.PORTFOLIO_INDEX))
-        self.assertGreater(len(retrieval.PORTFOLIO_INDEX), 0)
+        self.client_factory.assert_not_called()
+        self.models.embed_content.assert_not_called()
+        self.models.generate_content.assert_not_called()
+        self.assertEqual(retrieval.PORTFOLIO_INDEX, [])
         for guard in self.network_guards:
             guard.assert_not_called()
 
     def test_api_and_embedding_clients_are_mocked_before_import(self):
         api = self.load("src.api")
         embeddings = self.load("src.embeddings")
-        self.assertIs(api.client, self.provider)
-        self.assertIs(embeddings.client, self.provider)
+        self.client_factory.assert_not_called()
+        self.models.embed_content.assert_not_called()
+        self.models.generate_content.assert_not_called()
+        self.assertIs(api.get_generation_client(), self.provider)
+        self.assertIs(embeddings.get_client(), self.provider)
         self.assertEqual(self.client_factory.call_count, 2)
         self.assertEqual(api.api_key, "offline-test-key-not-a-secret")
         self.assertEqual(embeddings.api_key, "offline-test-key-not-a-secret")

@@ -1,9 +1,12 @@
 import math
 import re
+from dataclasses import dataclass
+from pathlib import Path
 
 from src.chunking import chunk_portfolio_by_section
 from src.embeddings import create_embedding
 from src.query_expansion import expand_query
+from src.index_store import DocumentIndex, load_index
 
 
 def cosine_similarity(
@@ -142,8 +145,10 @@ def bm25_score(
     return score
 
 
-def build_portfolio_index() -> list[tuple[str, list[float]]]:
-    chunks = chunk_portfolio_by_section()
+def build_portfolio_index(chunks: list[str] | None = None) -> list[tuple[str, list[float]]]:
+    """Explicit document embedding helper, called by ingestion, never startup."""
+    if chunks is None:
+        chunks = chunk_portfolio_by_section()
 
     portfolio_index = []
 
@@ -157,33 +162,49 @@ def build_portfolio_index() -> list[tuple[str, list[float]]]:
     return portfolio_index
 
 
-print("Building portfolio embedding index...")
+@dataclass(frozen=True)
+class RuntimeIndex:
+    document: DocumentIndex
+    portfolio: tuple
+    bm25: dict
 
-PORTFOLIO_INDEX = build_portfolio_index()
 
-PORTFOLIO_CHUNKS = [
-    chunk
-    for chunk, _embedding in PORTFOLIO_INDEX
-]
+def load_portfolio_index(path: Path) -> RuntimeIndex:
+    document = load_index(path)
+    chunks = [chunk.text for chunk in document.chunks]
+    return RuntimeIndex(
+        document,
+        tuple((chunk.text, chunk.embedding) for chunk in document.chunks),
+        build_bm25_index(chunks),
+    )
 
-BM25_INDEX = build_bm25_index(
-    PORTFOLIO_CHUNKS
-)
 
-print(
-    f"Portfolio index ready with "
-    f"{len(PORTFOLIO_INDEX)} chunks."
-)
+# Empty defaults support standalone scoring/debugging utilities. Loading is
+# explicit; the API keeps its loaded snapshot in app.state instead of globals.
+PORTFOLIO_INDEX = []
+BM25_INDEX = build_bm25_index([])
+
+
+def initialize_index(path: Path) -> None:
+    """Load the standalone evaluator/debugging snapshot without embedding."""
+    runtime = load_portfolio_index(path)
+    global PORTFOLIO_INDEX, BM25_INDEX
+    PORTFOLIO_INDEX, BM25_INDEX = runtime.portfolio, runtime.bm25
 
 
 def retrieve_relevant_chunks(
     question: str,
     top_k: int = 3,
+    *,
+    index: RuntimeIndex | None = None,
 ) -> list[tuple[str, float]]:
     if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 0:
         raise ValueError("top_k must be a non-negative integer.")
 
-    if top_k == 0 or not PORTFOLIO_INDEX:
+    portfolio = index.portfolio if index is not None else PORTFOLIO_INDEX
+    bm25 = index.bm25 if index is not None else BM25_INDEX
+
+    if top_k == 0 or not portfolio:
         return []
 
     expanded_question = expand_query(question)
@@ -198,7 +219,7 @@ def retrieve_relevant_chunks(
     for index, (
         chunk,
         chunk_embedding,
-    ) in enumerate(PORTFOLIO_INDEX):
+    ) in enumerate(portfolio):
 
         semantic_score = cosine_similarity(
             question_embedding,
@@ -208,7 +229,7 @@ def retrieve_relevant_chunks(
         lexical_score = bm25_score(
             expanded_question,
             index,
-            BM25_INDEX,
+            bm25,
         )
 
         raw_results.append(
@@ -372,6 +393,9 @@ def debug_retrieval(
 
 
 if __name__ == "__main__":
+    from src.config import Settings
+
+    initialize_index(Settings.from_env().index_path)
     test_question = (
         "Which project did Timothy build independently?"
     )

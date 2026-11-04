@@ -5,3 +5,6 @@ __pycache__/
 .idea/
 *.pyc
 .DS_Store
+
+# Generated portfolio knowledge and vectors: ship as reviewed build artifacts.
+/data/index/
