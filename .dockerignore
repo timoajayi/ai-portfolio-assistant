@@ -1,0 +1,29 @@
+# Deny everything by default, including all current and future credentials,
+# .env*, .codex, .git, venvs, caches, tests, logs, and temporary artifacts.
+**
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!uv.lock
+!release.sha256
+!src/
+src/**
+!src/__init__.py
+!src/api.py
+!src/chunking.py
+!src/config.py
+!src/diagnostics.py
+!src/embeddings.py
+!src/index_store.py
+!src/knowledge.py
+!src/provider.py
+!src/query_expansion.py
+!src/query_router.py
+!src/reliability.py
+!src/retrieval.py
+!data/
+data/**
+!data/portfolio.md
+!data/index/
+data/index/**
+!data/index/portfolio.json

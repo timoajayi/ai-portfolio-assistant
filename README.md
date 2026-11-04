@@ -805,6 +805,183 @@ http://127.0.0.1:8000/health
 
 ---
 
+## Production Docker package
+
+The multi-stage Dockerfile pins Python `3.11.18-slim-bookworm` and uv `0.10.2`
+by immutable multi-platform registry digests. The dependency stage uses the
+committed `uv.lock` with `uv sync --frozen --no-dev --no-install-project
+--no-editable --no-build`; only locked runtime dependencies are installed,
+without source builds or managed Python downloads. uv and its cache remain in
+the builder, not the runtime image. BuildKit and registry/package access are
+needed for a first build. No host dependency installation is required.
+
+The final image contains `/app/.venv`, thirteen runtime Python modules,
+`pyproject.toml`, `uv.lock`, `release.sha256`, `data/portfolio.md`, and the
+validated `data/index/portfolio.json`. Ingestion, evaluators, tests, local
+configuration, and credentials are not packaged. It runs as UID/GID `10001`,
+with one Uvicorn worker, no reload, host `0.0.0.0`, and `${PORT:-8080}`.
+An exec startup command forwards termination signals to Uvicorn. The image's
+health check calls `/ready` using the standard library without contacting Gemini.
+
+### Prepare the existing index as a release artifact
+
+Docker does not obtain Git-ignored files from GitHub. Before preparing a release,
+supply the existing reviewed index at `data/index/portfolio.json`, together with
+the matching knowledge source. For this release it contains 18 validated chunks.
+Do not force-add the artifact to Git or regenerate it during builds/startup.
+
+From the repository root, prepare a new context outside the checkout:
+
+```sh
+release_parent="$(mktemp -d)"
+release_context="$release_parent/context"
+.venv/bin/python -B scripts/prepare_docker_context.py "$release_context"
+docker build --tag ai-portfolio-assistant:phase4b "$release_context"
+```
+
+The helper validates the existing index without importing Gemini clients,
+snapshots only explicitly named files, rejects symlinked inputs and existing
+destinations, and writes deterministic SHA-256 checksums for runtime inputs.
+It never copies the whole data directory. Source and index bytes are preserved.
+The Dockerfile verifies those checksums and runs the existing index validator
+in a build step with networking disabled. Missing, corrupt, stale, or mismatched
+artifacts fail preparation/build, and startup retains its own validation.
+
+Use the helper-generated context, not `docker build .`: the checksum manifest
+is generated only in that context. `.dockerignore` additionally denies every
+file except the exact build/runtime allowlist, independently of `.gitignore`.
+This excludes `.env*` (including `.env.example`), `.codex`, Git history, virtual
+environments, credentials, tests, caches, logs, and temporary files. Review any
+future additions to both the context allowlist and Dockerfile. Transfer release
+artifacts through controlled CI/private artifact storage; checksums establish
+consistency, not authenticity. Build/deployment access must be restricted.
+
+The root-owned packaged source/index files have mode `0444`; their parent
+directories are not writable by the application user. No runtime ingestion or
+writable persistent disk is required. Release a matching knowledge/index pair
+and retain the previous release for rollback. Do not bind-mount a writable
+replacement over the packaged index in production.
+
+### Run locally or supply deployment configuration
+
+Supply `GOOGLE_API_KEY` at runtime through the platform's secret mechanism.
+For the following command, securely export it in the invoking shell first;
+`--env GOOGLE_API_KEY` passes it without placing its value in the command text.
+Do not use Docker build arguments, image ENV declarations, or source files for
+credentials. Users with Docker daemon access can inspect runtime environment
+values, so restrict that access too.
+
+```sh
+local_container="$(docker run --detach --read-only \
+  --cap-drop ALL --security-opt no-new-privileges:true \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --publish 127.0.0.1::8080 \
+  --env GOOGLE_API_KEY \
+  --env FRONTEND_ORIGINS=http://localhost:3000 \
+  ai-portfolio-assistant:phase4b)"
+docker port "$local_container" 8080/tcp
+```
+
+The ephemeral host port avoids port 8000 and existing containers. After startup,
+use the address printed by `docker port` with `curl --fail --max-time 5` for
+`/health` and `/ready`; expected results are HTTP 200 with the existing health
+body and `{"status":"ready"}` respectively. Only these endpoints are needed
+for packaging checks. `/chat` makes live provider calls and requires separate
+authorization. Stop/remove only this container when finished:
+
+```sh
+docker stop --time 10 "$local_container"
+docker rm "$local_container"
+```
+
+`PORT` defaults to 8080; set it to the platform's supplied value and match the
+container target port when publishing locally. `RAG_INDEX_PATH` defaults in the
+image to `/app/data/index/portfolio.json`; relative overrides still resolve
+against `/app`. Set `FRONTEND_ORIGINS` to the exact HTTPS production frontend
+origin(s). All token/thinking, Gemini transport, deadline, body-size, rate, and
+concurrency settings retain the defaults in the configuration table above.
+Networking defaults to `auto`; choose `ipv4` only for an affected direct network.
+No real `.env` is copied, changed, or required inside the image.
+
+### Guaranteed offline container smoke test
+
+Once a Docker daemon is available, the following uses a fake key and disables
+all container networking. It invokes no chat requests, cannot reach Gemini,
+and leaves existing containers and port 8000 alone:
+
+```sh
+smoke_container="$(docker run --detach --network none --read-only \
+  --cap-drop ALL --security-opt no-new-privileges:true \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --env GOOGLE_API_KEY=offline-container-test-key \
+  ai-portfolio-assistant:phase4b)"
+```
+
+Run health/readiness checks inside that isolated container (startup is allowed
+up to 20 seconds), verify its user and artifact, then remove only that container:
+
+```sh
+docker exec -i "$smoke_container" python -B - <<'PY'
+import http.client
+import json
+import os
+from pathlib import Path
+import time
+from src.index_store import load_index
+
+assert os.getuid() == 10001
+index_path = Path(os.environ['RAG_INDEX_PATH'])
+index = load_index(index_path)
+assert not os.access(index_path, os.W_OK)
+assert not os.access(index_path.parent, os.W_OK)
+for excluded in ('.env', '.git', '.codex', 'tests', 'scripts', 'src/ingest.py'):
+    assert not Path('/app', excluded).exists()
+assert not Path('/usr/local/bin/uv').exists()
+for endpoint in ('/health', '/ready'):
+    deadline = time.monotonic() + 20
+    while True:
+        connection = http.client.HTTPConnection('127.0.0.1', int(os.environ['PORT']), timeout=2)
+        try:
+            connection.request('GET', endpoint)
+            response = connection.getresponse()
+            body = json.loads(response.read())
+            assert response.status == 200
+            if endpoint == '/ready':
+                assert body == {'status': 'ready'}
+            print(endpoint, response.status, body)
+            break
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.2)
+        finally:
+            connection.close()
+print('Validated non-root, read-only container index:', len(index.chunks), 'chunks')
+PY
+docker stop --time 10 "$smoke_container"
+docker rm "$smoke_container"
+```
+
+The host offline suite also covers release allowlisting, symlink rejection,
+matching source/index bytes, checksums, and failure cleanup:
+
+```sh
+.venv/bin/python -B -m unittest discover -s tests -v
+git diff --check
+```
+
+Actual image/container checks require a running Docker daemon. A Docker CLI
+without its daemon cannot build or run this package; start Docker separately
+and rerun the commands above. Do not infer image success from unit tests alone.
+The initial package still needs an image vulnerability scan, deployment-region
+connectivity/proxy checks, ingress limits, provider quotas/cost controls, and
+staging measurements. Limits remain process-local; blocked synchronous workers
+and shutdown can require external process recovery. Update pinned image digests
+deliberately for security releases. Reproducibility means pinned build inputs
+and dependencies, not a promise of identical image bytes across architectures.
+
+---
+
 ## Frontend Integration
 
 The assistant is integrated into a separate Next.js AI Engineer portfolio.
