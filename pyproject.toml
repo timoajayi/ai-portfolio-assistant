@@ -8,3 +8,10 @@ dependencies = [
     "python-dotenv>=1.2.4",
     "uvicorn[standard]>=0.54.0",
 ]
+
+[tool.uv]
+# Security floors for transitive dependencies; do not force parent upgrades.
+constraint-dependencies = [
+    "certifi>=2026.10.19",
+    "pyasn1>=0.6.5",
+]
