@@ -40,6 +40,13 @@ none are skipped or marked as expected failures.
   usage is sanitized; token and thinking settings are validated.
 - Transport: IPv4 source binding, unchanged provider hostname, certificate and
   hostname verification, SNI, proxy rejection, timeouts, and no global changes.
+- Protected staging: opt-in default-deny HTTP authentication, constant-time
+  comparison, duplicate/malformed credential rejection, future-route protection,
+  public health checks, disabled docs, explicit CORS allowlists, sanitized
+  validation errors, and an IP-independent aggregate budget. Rejections make no
+  provider calls; existing deadlines, worker leases, body limits and peer rate
+  limits also run under authenticated staging. The shared fixture disables
+  staging by default and never reads a real staging credential.
 
 The original Phase 1 baseline had 63 tests exposing 15 production defects.
 Those defects are fixed; historical failure counts are not current results.

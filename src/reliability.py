@@ -4,6 +4,8 @@ import asyncio
 import json
 import logging
 import math
+import re
+import secrets
 from threading import BoundedSemaphore, Lock
 import time
 from uuid import uuid4
@@ -60,6 +62,19 @@ class ChatControls:
         self.rate_limiter = RateLimiter(
             settings.rate_requests, settings.rate_window_seconds, settings.rate_max_clients
         )
+        # One constant identity gives a bounded aggregate budget, independent of IP.
+        self.authenticated_budget = RateLimiter(
+            settings.staging_budget_requests, settings.staging_budget_window_seconds, 1
+        )
+
+
+def staging_authorized(scope, expected: str) -> bool:
+    headers = [value for key, value in scope.get("headers", [])
+               if key.lower() == b"authorization"]
+    if len(headers) != 1:
+        return False
+    match = re.fullmatch(rb"(?i:Bearer) ([A-Za-z0-9_-]{43,256})", headers[0])
+    return match is not None and secrets.compare_digest(match[1], expected.encode("ascii"))
 
 
 class CapacityLease:
@@ -135,11 +150,26 @@ class ChatProtectionMiddleware:
 
         async def reject(code, detail, retry_after=None):
             headers = {"Retry-After": str(retry_after)} if retry_after is not None else None
+            if code == 401:
+                headers = {"WWW-Authenticate": "Bearer"}
             await JSONResponse({"detail": detail}, status_code=code, headers=headers)(
                 scope, receive, tracked_send
             )
 
         try:
+            # Default-deny all routes except public health checks. Future paid
+            # endpoints inherit this gate without remembering a dependency.
+            public_health = (scope["method"] in ("GET", "HEAD")
+                             and scope["path"] in ("/health", "/ready"))
+            if self.controls.settings.staging_auth_enabled and not public_health:
+                if not staging_authorized(scope, self.controls.settings.staging_auth_token):
+                    await reject(401, "Unauthorized.")
+                    return
+                limited_status, retry = self.controls.authenticated_budget.check("authenticated")
+                if limited_status:
+                    await reject(429, "Request limit exceeded. Please try again later.", retry)
+                    return
+
             # Include the redirect alias so /chat/ cannot bypass protection.
             if scope["method"] == "POST" and scope["path"] in ("/chat", "/chat/"):
                 diagnostics = ChatDiagnostics(started, self.controls.settings.chat_deadline_seconds)

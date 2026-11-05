@@ -805,6 +805,84 @@ http://127.0.0.1:8000/health
 
 ---
 
+## Protected staging API
+
+Local development remains unauthenticated by default. For protected staging,
+explicitly set `STAGING_AUTH_ENABLED=true` and supply `STAGING_AUTH_TOKEN`
+through the deployment platform's runtime secret mechanism. The token must be
+43–256 ASCII URL-safe characters (`A-Z`, `a-z`, digits, `_`, `-`). Generate at
+least 32 random bytes using Python's `secrets.token_urlsafe(32)` in a trusted
+environment and store the result securely. Format validation cannot establish
+randomness. An enabled staging configuration with a missing/invalid token fails
+before the application starts. The real local `.env` is not needed in the image.
+
+All HTTP routes except `GET`/`HEAD` on `/health` and `/ready` require exactly one
+`Authorization: Bearer <token>` header in staging. This default-deny middleware
+also protects `/chat/` and future HTTP endpoints. Missing, malformed, duplicate,
+or incorrect credentials return `401` with `{"detail":"Unauthorized."}` before
+provider admission, body processing, or client initialization. Token comparison
+uses `secrets.compare_digest`. Query/body credentials and cookies are not used.
+CORS preflight requests can complete without authentication but cannot invoke
+provider operations. Documentation routes `/docs`, `/redoc`, and `/openapi.json`
+are not registered in staging; local development retains them. Unauthenticated
+requests to non-health paths, including disabled documentation paths, return 401;
+authenticated requests to disabled paths return 404.
+
+Use a trusted CLI/API client over HTTPS initially. Never put a staging token in
+`NEXT_PUBLIC_*`, browser JavaScript, URLs, request bodies, source control, logs,
+Docker build arguments, or shared request collections. Avoid shell history and
+command-line exposure when supplying it. A browser integration requires a
+trusted server-side component that authenticates tester sessions, checks CSRF
+and origin requirements, applies limits, and adds the backend token server-side.
+An unauthenticated forwarding endpoint would expose paid calls again. A shared
+token has no individual attribution: restrict distribution and rotate it on
+leakage or tester offboarding. New token values require a process restart.
+
+Set `FRONTEND_ORIGINS` to an empty value for CLI-only staging, or an explicit
+comma-separated HTTP(S) origin allowlist. When omitted in staging it defaults
+to empty. Wildcards, credentials, paths, queries, fragments, and malformed ports
+are rejected. The local origins in `.env.example` must be explicitly replaced
+or cleared for staging. Staging CORS allows only GET/POST, Authorization and
+Content-Type headers, and does not enable credentialed cookies. CORS is browser
+policy, not authentication: a valid token holder can use a non-browser client.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `STAGING_AUTH_ENABLED` | `false` | Explicit `true`/`false`; protected mode is opt-in |
+| `STAGING_AUTH_TOKEN` | empty | Required runtime secret when protected mode is enabled |
+| `STAGING_BUDGET_REQUESTS` | `10` | Positive aggregate authenticated attempts per window |
+| `STAGING_BUDGET_WINDOW_SECONDS` | `60` | Positive fixed-window duration in monotonic seconds |
+
+The aggregate budget is active only in protected mode and independent of peer
+IP or forwarding headers. It has one fixed identity and bounded memory. Exhaustion
+returns 429 with a rounded-up `Retry-After`. Authentication failures and health
+checks do not consume it. Other authenticated HTTP attempts count conservatively,
+including invalid requests, unknown routes, redirects and provider failures;
+following `/chat/` to `/chat` consumes two attempts, so prefer `/chat` directly.
+Existing peer rate limits, body limits, non-blocking concurrency leases and the
+40-second chat deadline remain in effect. A 504 does not cancel an already-running
+Gemini request; its concurrency slot remains held until the worker actually exits.
+Future endpoints inherit authentication/budget protection, but must separately
+use appropriate body, concurrency and deadline protections if they perform paid work.
+
+This budget is process-local, resets on restart, permits fixed-window boundary
+bursts, and multiplies across workers, instances or overlapping deployments. It
+is not a hard monetary spending cap. Start with one instance/worker and retain
+provider quotas, staging spend controls, billing alerts and operator access
+restrictions. Keep `--no-proxy-headers` until proxy trust is explicitly reviewed;
+Render callers may otherwise share a peer bucket. Runtime isolation and the
+residual CVE dispositions remain separate deployment requirements.
+
+Validation errors now use allowlisted generic messages/locations and omit input,
+context, and attacker-controlled field names in both local and protected modes.
+Operational logs retain status/request IDs and sanitized timing metadata; they
+never include Authorization headers, tokens, visitor messages, or provider text.
+
+Verify staging with offline tests first. Health/readiness checks require no token
+and never call Gemini. A valid `/chat` request can incur provider charges and
+requires separate live-test authorization. No images or resources are published
+by enabling these settings in local tests.
+
 ## Production Docker package
 
 The multi-stage Dockerfile pins Python `3.11.18-slim-bookworm` and uv `0.10.2`

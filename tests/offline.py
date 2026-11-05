@@ -62,6 +62,10 @@ class OfflineTestCase(unittest.TestCase):
 
         self.stack.enter_context(patch.dict(os.environ, {
             "GOOGLE_API_KEY": "offline-test-key-not-a-secret",
+            "STAGING_AUTH_ENABLED": "false",
+            "STAGING_AUTH_TOKEN": "",
+            "STAGING_BUDGET_REQUESTS": "10",
+            "STAGING_BUDGET_WINDOW_SECONDS": "60",
             "FRONTEND_ORIGINS": "http://localhost:3000",
             "GEMINI_EMBEDDING_TIMEOUT_MS": "10000",
             "GEMINI_GENERATION_TIMEOUT_MS": "20000",

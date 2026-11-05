@@ -1,13 +1,48 @@
 """Validated operational settings. Load after dotenv at application entry points."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 import os
+import re
 from pathlib import Path
 from urllib.request import getproxies
+from urllib.parse import urlsplit
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+
+
+def staging_authentication() -> tuple[bool, str]:
+    enabled = os.environ.get("STAGING_AUTH_ENABLED", "false").strip().lower()
+    if enabled not in ("true", "false"):
+        raise ValueError("STAGING_AUTH_ENABLED must be true or false.")
+    if enabled == "false":
+        return False, ""
+    token = os.environ.get("STAGING_AUTH_TOKEN", "")
+    if re.fullmatch(r"[A-Za-z0-9_-]{43,256}", token) is None:
+        raise ValueError("STAGING_AUTH_TOKEN must contain 43 to 256 URL-safe characters.")
+    return True, token
+
+
+def configured_frontend_origins(staging: bool) -> list[str]:
+    # Staging requires an explicit allowlist; local development keeps its defaults.
+    default = "" if staging else "http://localhost:3000,http://127.0.0.1:3000"
+    origins = [origin.strip() for origin in os.environ.get("FRONTEND_ORIGINS", default).split(",")
+               if origin.strip()]
+    if staging:
+        for origin in origins:
+            try:
+                parsed = urlsplit(origin)
+                valid = (parsed.scheme in ("http", "https") and parsed.hostname
+                         and not any(c in origin for c in ("*", "\\", "?", "#", "\r", "\n", "\t", " "))
+                         and parsed.username is None and parsed.password is None
+                         and not parsed.path and not parsed.query and not parsed.fragment)
+                parsed.port  # Validate malformed ports without echoing the value.
+            except ValueError:
+                valid = False
+            if not valid:
+                raise ValueError("FRONTEND_ORIGINS must contain explicit HTTP(S) origins in staging.")
+    return origins
 
 
 def index_path() -> Path:
@@ -69,6 +104,10 @@ def validate_network_policy(value: str) -> str:
 
 @dataclass(frozen=True)
 class Settings:
+    staging_auth_enabled: bool = False
+    staging_auth_token: str = field(default="", repr=False)
+    staging_budget_requests: int = 10
+    staging_budget_window_seconds: int = 60
     gemini_network_policy: str = "auto"
     chat_deadline_seconds: float = 40.0
     index_path: Path = REPOSITORY_ROOT / "data/index/portfolio.json"
@@ -84,7 +123,13 @@ class Settings:
 
     @classmethod
     def from_env(cls):
+        staging, token = staging_authentication()
+        configured_frontend_origins(staging)
         return cls(
+            staging_auth_enabled=staging,
+            staging_auth_token=token,
+            staging_budget_requests=positive_integer("STAGING_BUDGET_REQUESTS", 10),
+            staging_budget_window_seconds=positive_integer("STAGING_BUDGET_WINDOW_SECONDS", 60),
             gemini_network_policy=validate_network_policy(os.environ.get("GEMINI_NETWORK_POLICY", "auto")),
             chat_deadline_seconds=chat_deadline_seconds(),
             index_path=index_path(),

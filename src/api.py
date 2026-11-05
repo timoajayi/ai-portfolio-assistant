@@ -5,6 +5,7 @@ from threading import Lock
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from google import genai
@@ -16,7 +17,7 @@ from src.retrieval import retrieve_relevant_chunks, load_portfolio_index
 from src.index_store import IndexValidationError
 from src.embeddings import close_client as close_embedding_client
 from src.diagnostics import phase
-from src.config import Settings
+from src.config import Settings, configured_frontend_origins
 from src.provider import ERROR_DETAIL, classify_failure, generation_metadata, http_options, response_text
 from src.reliability import ChatControls, ChatProtectionMiddleware, logger
 
@@ -26,21 +27,13 @@ load_dotenv()
 
 api_key = os.getenv("GOOGLE_API_KEY")
 
-frontend_origins = [
-    origin.strip()
-    for origin in os.getenv(
-        "FRONTEND_ORIGINS",
-        "http://localhost:3000,http://127.0.0.1:3000",
-    ).split(",")
-    if origin.strip()
-]
-
 if not api_key:
     raise ValueError("GOOGLE_API_KEY was not found in the .env file.")
 
 
 # Create Gemini client
 settings = Settings.from_env()
+frontend_origins = configured_frontend_origins(settings.staging_auth_enabled)
 client = None
 _client_lock = Lock()
 
@@ -100,6 +93,9 @@ app = FastAPI(
     title="AI Portfolio Assistant API",
     version="0.1.0",
     lifespan=lifespan,
+    docs_url=None if settings.staging_auth_enabled else "/docs",
+    redoc_url=None if settings.staging_auth_enabled else "/redoc",
+    openapi_url=None if settings.staging_auth_enabled else "/openapi.json",
 )
 
 app.state.rag_index = None
@@ -111,11 +107,35 @@ app.add_middleware(ChatProtectionMiddleware, controls=app.state.chat_controls)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=frontend_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=not settings.staging_auth_enabled,
+    allow_methods=["GET", "POST"] if settings.staging_auth_enabled else ["*"],
+    allow_headers=["Authorization", "Content-Type"] if settings.staging_auth_enabled else ["*"],
     expose_headers=["X-Request-ID", "Retry-After"],
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_validation_error(http_request: Request, error: RequestValidationError):
+    # Never serialize Pydantic input/ctx/msg or attacker-selected field names.
+    messages = {
+        "missing": "Required field is missing.",
+        "extra_forbidden": "Unexpected fields are not allowed.",
+        "string_type": "Message must be a string.",
+        "string_too_short": "Message must not be empty.",
+        "string_too_long": "Message must contain at most 1000 characters.",
+        "value_error": "Message must not be blank.",
+        "json_invalid": "Invalid JSON body.",
+    }
+    details = []
+    for item in error.errors()[:20]:
+        kind = item.get("type")
+        location = item.get("loc", ())
+        details.append({
+            "loc": ["body", "message"] if location[:2] == ("body", "message") else ["body"],
+            "msg": messages.get(kind, "Invalid request body."),
+            "type": kind if kind in messages else "request_validation_error",
+        })
+    return JSONResponse({"detail": details}, status_code=422)
 
 
 # Define the structure of a chat request

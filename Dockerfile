@@ -21,7 +21,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 # Runtime dependencies are already built in /app/.venv; packaging tools and
 # bootstrap wheels are unnecessary here, including their vendored libraries.
-RUN --network=none python -m pip --disable-pip-version-check uninstall --yes pip setuptools wheel && \
+# No runtime package installation is needed. Remove APT and its unused library
+# offline to eliminate CVE-2026-109518 without mutable repository inputs.
+RUN --network=none dpkg --purge apt libapt-pkg6.0 && \
+    python -m pip --disable-pip-version-check uninstall --yes pip setuptools wheel && \
     python -c "import shutil, sysconfig; from pathlib import Path; shutil.rmtree(Path(sysconfig.get_path('stdlib')) / 'ensurepip')" && \
     groupadd --gid 10001 app && \
     useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin app
