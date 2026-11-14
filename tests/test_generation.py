@@ -171,11 +171,11 @@ class GenerationResponseTests(ReliabilityTestCase):
         response.candidates[0].content.parts.insert(0, types.Part(text=secret, thought=True))
         self.models.generate_content.return_value = response
         with patch("src.reliability.logger.info") as info:
-            result = self.post(headers={"Authorization": "PRIVATE-AUTHORIZATION"})
+            result = self.post(headers=self.legacy_headers)
         self.assertEqual(result.json(), {"answer": secret})
         serialized = json.dumps([json.loads(call.args[0]) for call in info.call_args_list])
         for private in (secret, "PRIVATE-FREE-FORM-MESSAGE", "PRIVATE-AUTHORIZATION",
-                        "Docker?", "offline-test-key-not-a-secret", "Retrieved portfolio context"):
+                        "Docker?", self.legacy_headers["Authorization"], "offline-test-key-not-a-secret", "Retrieved portfolio context"):
             self.assertNotIn(private, serialized)
         prompt = self.models.generate_content.call_args.kwargs["contents"]
         self.assertNotIn(prompt, serialized)
@@ -244,7 +244,7 @@ class GenerationConfigurationTests(OfflineTestCase):
             "GEMINI_MAX_OUTPUT_TOKENS": "2048", "GEMINI_THINKING_LEVEL": " medium ",
         }):
             api = self.load("src.api")
-        with TestClient(api.app) as client:
+        with TestClient(api.app, headers=self.authorize_legacy_staging(api)) as client:
             self.assertEqual(client.post("/chat", json={"message": "Docker?"}).status_code, 200)
         arguments = self.models.generate_content.call_args.kwargs
         self.assertEqual(arguments["model"], "gemini-3.8-flash")

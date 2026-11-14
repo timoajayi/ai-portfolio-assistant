@@ -8,3 +8,9 @@ __pycache__/
 
 # Generated portfolio knowledge and vectors: ship as reviewed build artifacts.
 /data/index/
+
+# Operator-provisioned usage state must never be a release artifact.
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm

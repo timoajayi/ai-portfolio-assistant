@@ -196,7 +196,7 @@ class DeadlineTests(ReliabilityTestCase):
                 sent.append(message)
 
             await asyncio.wait_for(self.api.app({
-                "type": "http", "method": "POST", "path": "/chat", "headers": [],
+                "type": "http", "method": "POST", "path": "/chat", "headers": [(b"authorization", self.legacy_headers["Authorization"].encode())],
                 "client": ("192.0.2.1", 1),
             }, receive, send), timeout=0.8)
             self.assertEqual(sent[0]["status"], 504)

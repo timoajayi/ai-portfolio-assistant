@@ -380,7 +380,7 @@ class RuntimeIndexTests(IndexTestCase):
     def test_before_startup_readiness_and_chat_fail_safely(self):
         api = self.load("src.api")
         # Intentionally omit the TestClient lifespan context to test no startup.
-        client = TestClient(api.app)
+        client = TestClient(api.app, headers=self.authorize_legacy_staging(api))
         self.addCleanup(client.close)
         self.assertEqual(client.get("/ready").status_code, 503)
         self.assertEqual(client.get("/ready").json(), {"status": "not_ready"})
@@ -393,7 +393,7 @@ class RuntimeIndexTests(IndexTestCase):
 
     def test_only_focused_chat_creates_query_embedding(self):
         api = self.load("src.api")
-        with TestClient(api.app) as client:
+        with TestClient(api.app, headers=self.authorize_legacy_staging(api)) as client:
             client.get("/health")
             client.get("/ready")
             self.models.embed_content.assert_not_called()
@@ -403,7 +403,7 @@ class RuntimeIndexTests(IndexTestCase):
 
     def test_collection_chat_uses_validated_snapshot_if_disk_source_changes(self):
         api = self.load("src.api")
-        with TestClient(api.app) as client:
+        with TestClient(api.app, headers=self.authorize_legacy_staging(api)) as client:
             with patch.object(knowledge, "PORTFOLIO_PATH", Path(self.temporary) / "missing.md"):
                 response = client.post("/chat", json={"message": "List Timothy's projects."})
             self.assertEqual(response.status_code, 200)

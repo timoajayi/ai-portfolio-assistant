@@ -19,6 +19,13 @@ RUNTIME_FILES = (
     "src/diagnostics.py", "src/embeddings.py", "src/index_store.py",
     "src/knowledge.py", "src/provider.py", "src/query_expansion.py",
     "src/query_router.py", "src/reliability.py", "src/retrieval.py",
+    "src/usage.py", "src/usage_admin.py",
+    "src/identity.py", "src/session_admission.py", "src/ip_admission.py",
+    "src/bot_verification.py",
+    "src/session_chat.py",
+    "src/auth.py", "src/legacy_policy.py",
+    "src/gateway_assertions.py", "src/gateway_replay.py",
+    "src/authenticated_session_chat.py", "src/session_chat_http.py",
 )
 IMAGE_FILES = (
     "pyproject.toml", "uv.lock", *RUNTIME_FILES,

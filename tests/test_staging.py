@@ -26,6 +26,7 @@ class StagingTests(OfflineTestCase):
             "FRONTEND_ORIGINS": "https://staging.example.test",
         }))
         self.api = self.load("src.api")
+        self.authorize_legacy_staging(self.api, token=TOKEN, large_budget=False)
         self.controls = self.api.app.state.chat_controls
         self.http = self.stack.enter_context(TestClient(self.api.app))
         self.logs = self.stack.enter_context(patch("src.reliability.logger.info"))
@@ -88,7 +89,8 @@ class StagingTests(OfflineTestCase):
         self.assert_no_provider_work()
         response = self.http.post("/chat/", json={"message": "Docker?"},
                                   headers={"Authorization": f"Bearer {TOKEN}"})
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 404)
+        self.assertNotIn("location", response.headers)
 
     def test_query_and_body_credentials_are_not_accepted(self):
         response = self.http.post(f"/chat?token={TOKEN}",
@@ -252,13 +254,15 @@ class StagingTests(OfflineTestCase):
 
 
 class StagingConfigurationTests(OfflineTestCase):
-    def test_local_defaults_preserve_unauthenticated_access_and_documentation(self):
+    def test_defaults_deny_legacy_execution_and_preserve_documentation(self):
         api = self.load("src.api")
         with TestClient(api.app) as http:
-            self.assertEqual(http.post("/chat", json={"message": "Docker?"}).status_code, 200)
+            self.assertEqual(http.post("/chat", json={"message": "Docker?"}).status_code, 404)
             for path in ("/docs", "/redoc", "/openapi.json"):
                 self.assertEqual(http.get(path).status_code, 200)
         self.assertEqual(api.app.state.chat_controls.authenticated_budget.clients, {})
+        self.models.generate_content.assert_not_called()
+        self.models.embed_content.assert_not_called()
 
     def test_missing_token_prevents_application_startup_without_provider_calls(self):
         with patch.dict(os.environ, {"STAGING_AUTH_ENABLED": "true", "STAGING_AUTH_TOKEN": ""}):
@@ -314,7 +318,7 @@ class StagingConfigurationTests(OfflineTestCase):
 
     def test_local_validation_errors_are_sanitized_too(self):
         api = self.load("src.api")
-        with TestClient(api.app) as http:
+        with TestClient(api.app, headers=self.authorize_legacy_staging(api)) as http:
             response = http.post("/chat", json={"message": "local-private-input", "private-field": True})
         self.assertEqual(response.status_code, 422)
         self.assertNotIn("local-private-input", response.text)

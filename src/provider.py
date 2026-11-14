@@ -4,6 +4,7 @@ import httpx
 from google.genai import errors, types
 from src.diagnostics import ChatDeadlineExceeded
 from src.config import validate_network_policy
+from src.usage import UsageDenied
 
 
 ERROR_DETAIL = "The AI assistant could not generate a response."
@@ -108,6 +109,8 @@ def response_text(response) -> str:
 
 
 def classify_failure(error: Exception) -> tuple[int, str, dict[str, str]]:
+    if isinstance(error, UsageDenied):
+        return error.status, error.category, {}
     if isinstance(error, ChatDeadlineExceeded):
         return 504, "deadline", {}
     if isinstance(error, (TimeoutError, httpx.TimeoutException)):

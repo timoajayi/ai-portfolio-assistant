@@ -1,6 +1,8 @@
 import os
 import json
-from contextlib import asynccontextmanager
+import hashlib
+import secrets
+from contextlib import asynccontextmanager, ExitStack
 from threading import Lock
 
 from dotenv import load_dotenv
@@ -19,7 +21,12 @@ from src.embeddings import close_client as close_embedding_client
 from src.diagnostics import phase
 from src.config import Settings, configured_frontend_origins
 from src.provider import ERROR_DETAIL, classify_failure, generation_metadata, http_options, response_text
-from src.reliability import ChatControls, ChatProtectionMiddleware, logger
+from src.reliability import ChatControls, ChatProtectionMiddleware, VerifiedSessionBrowserBoundary, logger
+from src.usage import UsageLedger, UsageDenied, chat_usage, paid_call
+from src.bot_verification import (TurnstileAdapter, VerifiedSessionService, VerificationError,
+                                  verification_diagnostics, verification_stage)
+from src.legacy_policy import validate_legacy_configuration, legacy_execution_allowed, canonical_legacy_request
+from src.session_chat_http import SessionChatHTTPAdapter, validate_http_configuration
 
 
 # Load environment variables from .env
@@ -53,6 +60,8 @@ def get_generation_client():
 @asynccontextmanager
 async def lifespan(app):
     app.state.rag_index = None
+    validate_legacy_configuration(app.state.chat_controls.settings)
+    validate_http_configuration(app, app.state.chat_controls)
     try:
         app.state.rag_index = load_portfolio_index(settings.index_path)
     except IndexValidationError as error:
@@ -99,7 +108,9 @@ app = FastAPI(
 )
 
 app.state.rag_index = None
+app.state.session_chat_pipeline = None  # Only trusted server composition may supply a pipeline/resolver.
 app.state.chat_controls = ChatControls(settings)
+app.state.verification_service = VerifiedSessionService(TurnstileAdapter(settings))
 app.add_middleware(ChatProtectionMiddleware, controls=app.state.chat_controls)
 
 
@@ -112,10 +123,15 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"] if settings.staging_auth_enabled else ["*"],
     expose_headers=["X-Request-ID", "Retry-After"],
 )
+app.add_middleware(VerifiedSessionBrowserBoundary)
+# Outermost reserved-path adapter: disabled requests never enter CORS/routing.
+app.add_middleware(SessionChatHTTPAdapter, application=app, controls=app.state.chat_controls)
 
 
 @app.exception_handler(RequestValidationError)
 async def safe_validation_error(http_request: Request, error: RequestValidationError):
+    if http_request.url.path.rstrip('/') == '/internal/verified-sessions':
+        return JSONResponse({'detail': 'Invalid verification request.'}, status_code=422)
     # Never serialize Pydantic input/ctx/msg or attacker-selected field names.
     messages = {
         "missing": "Required field is missing.",
@@ -164,6 +180,54 @@ class ChatResponse(BaseModel):
     answer: str
 
 
+class SessionIssuanceRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+
+class VerifiedSessionRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    proof: str = Field(min_length=1, max_length=2048, strict=True)
+
+
+@app.post('/internal/verified-sessions', include_in_schema=False)
+async def issue_verified_session(body: VerifiedSessionRequest, request: Request):
+    try:
+        with verification_diagnostics(request.state.request_id):
+            result = await request.app.state.verification_service.issue(
+                request.app.state.chat_controls.settings, request.scope, body.proof, request.state.request_id,
+                principal=getattr(request.state, 'authenticated_principal', None))
+            verification_stage('response_preparation')
+            return JSONResponse(result, status_code=201, headers={'Cache-Control': 'no-store'})
+    except (UsageDenied, VerificationError) as error:
+        return JSONResponse({'detail': 'Verification unavailable.'}, status_code=error.status,
+                            headers={'Cache-Control': 'no-store', **({'Retry-After': '60'} if error.status == 429 else {})})
+    except Exception:
+        return JSONResponse({'detail': 'Verification unavailable.'}, status_code=503,
+                            headers={'Cache-Control': 'no-store'})
+
+
+@app.post('/internal/sessions', include_in_schema=False)
+def issue_anonymous_session(body: SessionIssuanceRequest, request: Request):
+    configuration = request.app.state.chat_controls.settings
+    try:
+        token = secrets.token_urlsafe(32)
+        expires = UsageLedger.from_settings(configuration).issue_session(
+            hashlib.sha256(token.encode('ascii')).digest(),
+            lifetime=configuration.session_lifetime_seconds,
+            minute_limit=configuration.session_issuance_minute_limit,
+            day_limit=configuration.session_issuance_day_limit,
+            live_limit=configuration.session_max_live,
+        )
+    except UsageDenied as error:
+        return JSONResponse({'detail': 'Session issuance unavailable.'}, status_code=error.status,
+                            headers={'Cache-Control': 'no-store', **({'Retry-After': '60'} if error.status == 429 else {})})
+    except Exception:
+        return JSONResponse({'detail': 'Session issuance unavailable.'}, status_code=503,
+                            headers={'Cache-Control': 'no-store'})
+    return JSONResponse({'token': token, 'expires_at': expires}, status_code=201,
+                        headers={'Cache-Control': 'no-store'})
+
+
 @app.get("/health")
 async def health_check():
     return {
@@ -174,14 +238,26 @@ async def health_check():
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
+    if (not legacy_execution_allowed(http_request.app.state.chat_controls.settings)
+            or not canonical_legacy_request(http_request.scope)):
+        raise HTTPException(status_code=404, detail=ERROR_DETAIL, headers={"Cache-Control": "no-store"})
+    return _chat_worker(request, http_request, lambda: chat_usage(UsageLedger.from_settings(settings)))
+
+
+def _chat_worker(request: ChatRequest, http_request: Request, admission) -> ChatResponse:
+    """Shared synchronous pipeline; the caller supplies its admission gate."""
     lease = http_request.state.chat_capacity
     if not lease.start():
         raise HTTPException(status_code=503, detail=ERROR_DETAIL)
+    usage = ExitStack()
     try:
         http_request.state.chat_diagnostics.worker_started()
         runtime_index = http_request.app.state.rag_index
         if runtime_index is None:
             raise HTTPException(status_code=503, detail=ERROR_DETAIL)
+
+        # Durable admission occurs after auth/validation and before any paid work.
+        usage.enter_context(admission())
 
         # Broad project questions need coverage across the portfolio.
         with phase("query_routing"):
@@ -222,7 +298,7 @@ Visitor question:
 """
 
         with phase("generation"):
-            response = get_generation_client().models.generate_content(
+            response = paid_call("generation", lambda: get_generation_client().models.generate_content(
                 model="gemini-3.8-flash",
                 contents=prompt,
                 config={
@@ -230,7 +306,7 @@ Visitor question:
                     "max_output_tokens": settings.max_output_tokens,
                     "thinking_config": {"thinking_level": settings.thinking_level},
                 },
-            )
+            ))
 
         with phase("response_preparation"):
             http_request.state.chat_diagnostics.record_generation(generation_metadata(response))
@@ -248,7 +324,13 @@ Visitor question:
             headers=headers,
         ) from error
     finally:
-        lease.release()
+        try:
+            usage.close()  # Runs in the actual worker, including after HTTP 504.
+        except UsageDenied as error:
+            http_request.state.provider_failure = error.category
+            raise HTTPException(status_code=503, detail=ERROR_DETAIL) from None
+        finally:
+            lease.release()
 
 
 @app.get("/ready")

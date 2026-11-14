@@ -22,7 +22,8 @@ class ReliabilityTestCase(OfflineTestCase):
         super().setUp()
         self.api = self.load("src.api")
         self.controls = self.api.app.state.chat_controls
-        self.http = self.stack.enter_context(TestClient(self.api.app))
+        self.legacy_headers = self.authorize_legacy_staging(self.api)
+        self.http = self.stack.enter_context(TestClient(self.api.app, headers=self.legacy_headers))
         self.models.embed_content.reset_mock()
         # Logs are asserted explicitly in LoggingTests, not printed routinely.
         self.stack.enter_context(patch("src.reliability.logger.info"))
@@ -52,7 +53,8 @@ class ReliabilityTestCase(OfflineTestCase):
             "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
             "method": "POST", "scheme": "http", "path": path,
             "raw_path": path.encode(), "root_path": "", "query_string": b"",
-            "headers": [(b"content-type", b"application/json"), *headers],
+            "headers": [(b"content-type", b"application/json"),
+                        (b"authorization", self.legacy_headers["Authorization"].encode()), *headers],
             "client": client, "server": ("offline.invalid", 80),
         }
         await self.api.app(scope, receive, send)
@@ -311,7 +313,7 @@ class ConcurrencyTests(ReliabilityTestCase):
                 self.fail("Disconnected request should not send a response")
 
             await self.api.app({
-                "type": "http", "method": "POST", "path": "/chat", "headers": [],
+                "type": "http", "method": "POST", "path": "/chat", "headers": [(b"authorization", self.legacy_headers["Authorization"].encode())],
                 "client": ("192.0.2.1", 123),
             }, receive, send)
 
@@ -398,7 +400,7 @@ class ConfigurationTests(OfflineTestCase):
         }):
             api = self.load("src.api")
         self.client_factory.assert_not_called()
-        with TestClient(api.app) as client:
+        with TestClient(api.app, headers=self.authorize_legacy_staging(api)) as client:
             self.assertEqual(client.post("/chat", json={"message": "Docker?"}).status_code, 200)
         calls = self.client_factory.call_args_list
         self.assertEqual(len(calls), 2)
@@ -435,7 +437,7 @@ class LoggingTests(ReliabilityTestCase):
         self.models.generate_content.side_effect = RuntimeError("SENSITIVE-PROVIDER-DIAGNOSTIC")
         with patch("src.reliability.logger.info") as info:
             response = self.http.post("/chat", json={"message": secret}, headers={
-                "Authorization": "SENSITIVE-AUTHORIZATION",
+                "Authorization": self.legacy_headers["Authorization"],
                 "X-Request-ID": "SENSITIVE-FORGED-ID",
             })
         info.assert_called_once()
@@ -447,7 +449,7 @@ class LoggingTests(ReliabilityTestCase):
         self.assertGreaterEqual(payload["duration_ms"], 0)
         self.assertEqual(payload["request_id"], response.headers["x-request-id"])
         serialized = json.dumps(payload) + response.text
-        for sensitive in (secret, "SENSITIVE-PROVIDER-DIAGNOSTIC", "SENSITIVE-AUTHORIZATION", "SENSITIVE-FORGED-ID", "offline-test-key-not-a-secret", "Retrieved portfolio context"):
+        for sensitive in (secret, "SENSITIVE-PROVIDER-DIAGNOSTIC", self.legacy_headers["Authorization"], "SENSITIVE-FORGED-ID", "offline-test-key-not-a-secret", "Retrieved portfolio context"):
             self.assertNotIn(sensitive, serialized)
 
     def test_timeout_category_and_validation_rejection_are_logged(self):

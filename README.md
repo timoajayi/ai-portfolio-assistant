@@ -762,16 +762,17 @@ Using `uv`:
 uv sync
 ```
 
-### 3. Configure environment variables
+### 3. Supply private process configuration
 
-Create a `.env` file in the project root.
+The verified local backend uses `python -m src.local_development` and reads
+`GOOGLE_API_KEY` and `BOT_PROVIDER_SECRET` from its launch-process environment.
+Supply values privately; never commit or print them. This runner suppresses
+backend dotenv loading. The public development Turnstile site key belongs only
+in the Next.js process as `NEXT_PUBLIC_TURNSTILE_SITE_KEY`.
 
-```env
-GOOGLE_API_KEY=your_google_api_key
-FRONTEND_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
-```
-
-Do not commit `.env` or API keys to Git.
+See [secure local development](docs/local-development.md) for one-time private
+state/certificate preparation. Reuse existing state; never reinitialize it to
+reset allowances. No real credential or operational ledger belongs in Git.
 
 ### 4. Generate or supply the index
 
@@ -779,36 +780,40 @@ Supply a reviewed index artifact matching the knowledge source, or run the
 explicit ingestion command above with authorized provider credentials. This is
 a separate paid-capable step; do not run it as part of offline tests or startup.
 
-### 5. Start the API
+### 5. Start the secure local stack
 
-```bash
-uv run uvicorn src.api:app --reload --no-proxy-headers
+Use the existing private launch environment and state directory. These are
+reference commands; do not start duplicate servers or make live requests without
+operator authorization.
+
+```sh
+.venv/bin/python -B -m src.local_development serve \
+  --state "$HOME/.local/state/portfolio-assistant-development" \
+  --allow-live-providers
 ```
 
-The API will be available at:
+The backend listens on `http://127.0.0.1:8001`, with public `/health` and `/ready`.
+API documentation is disabled in this authenticated configuration. The separate
+Next.js development process listens on `127.0.0.1:3000`; the existing loopback
+HTTPS launcher serves the portfolio at **https://localhost:3443**. Use that HTTPS
+origin for the chatbot, not the underlying Next.js HTTP port.
 
-```text
-http://127.0.0.1:8000
-```
+See [the complete startup procedure](docs/local-development.md#startup-commands--only-after-explicit-live-provider-authorization)
+for the frontend and HTTPS launcher commands. `--session-only` deliberately blocks
+all backend chat execution while leaving verification/issuance configured; omit
+it only for an authorized live chat test. Legacy `/chat` is denied by default.
 
-FastAPI documentation:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-Health check:
-
-```text
-http://127.0.0.1:8000/health
-```
+A controlled local test completed Cloudflare verification, verified-session
+creation, and a Gemini/RAG answer about BundesHost. **Production deployment and
+production visitor identity have not been verified.**
 
 ---
 
 ## Protected staging API
 
-Local development remains unauthenticated by default. For protected staging,
-explicitly set `STAGING_AUTH_ENABLED=true` and supply `STAGING_AUTH_TOKEN`
+Legacy `/chat` is denied by default, including in local development. The secure
+local runner uses authenticated internal routes. For protected staging, explicitly
+set `STAGING_AUTH_ENABLED=true` and supply `STAGING_AUTH_TOKEN`
 through the deployment platform's runtime secret mechanism. The token must be
 43–256 ASCII URL-safe characters (`A-Z`, `a-z`, digits, `_`, `-`). Generate at
 least 32 random bytes using Python's `secrets.token_urlsafe(32)` in a trusted
@@ -883,6 +888,898 @@ and never call Gemini. A valid `/chat` request can incur provider charges and
 requires separate live-test authorization. No images or resources are published
 by enabling these settings in local tests.
 
+## Persistent Gemini usage protection
+
+Paid operations now require an existing, validated SQLite ledger. This supplements
+bearer authentication, peer limits, the staging aggregate budget, request/body
+validation, provider timeouts and existing concurrency leases. Nothing in ledger
+initialization deploys a service or enables public chat. Deployment must still set
+`STAGING_AUTH_ENABLED=true`; never expose the unauthenticated local-development
+mode. The new ledger is disabled when initialized, regardless of authentication.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `USAGE_LEDGER_PATH` | `/var/lib/ai-portfolio-assistant/usage.sqlite3` | Absolute path outside application and RAG index directories |
+| `USAGE_DAILY_LIMIT` | `100` | Provisional UTC daily admissions |
+| `USAGE_MONTHLY_LIMIT` | `1000` | Provisional UTC monthly admissions |
+| `USAGE_MAX_CONCURRENT` | `2` | Durable in-flight admissions; capped further by `CHAT_MAX_CONCURRENT` |
+| `USAGE_SQLITE_BUSY_MS` | `250` | Maximum SQLite busy wait, integer 1–2000 milliseconds |
+
+The schema has a version (`PRAGMA user_version=1`), a singleton `control` row
+containing the emergency state and accounting-date watermark, `periods` rows
+containing UTC day/month admission and provider-attempt counters, and `active`
+reservation rows. It stores no visitor messages, prompts, response text, API keys,
+bearer tokens, or token contents. SQL uses fixed statements and bound parameters;
+no FTS5 or SQLite session/changeset processing is used.
+
+Admission uses `BEGIN IMMEDIATE`, checks both allowances and the shared in-flight
+count, and increments both period counters in one committed transaction. Full
+synchronous commits precede paid work; the connection is closed before any
+provider call. Concurrent threads/processes on the same supported local filesystem
+cannot each claim the final allowance. A clock moving to an earlier UTC day fails
+closed; future periods use new rows without resetting historical counters.
+Accounting belongs to the admission's UTC day/month even if work crosses midnight.
+
+The validated `/chat` worker reserves once, before routing can reach the first
+embedding request. A reservation permits at most one query embedding and one
+generation attempt. `paid_call` also checks the durable emergency state and records
+an attempt before each SDK operation. It checks the existing application deadline
+again after database waiting. All current embedding, generation, interactive CLI,
+evaluation and ingestion call paths use this gate. A standalone embedding or CLI
+generation consumes one admission of its own; document ingestion therefore consumes
+one admission per chunk, rather than bypassing chat limits. New provider paths must
+use the same gate. SDK retries and automatic generation continuation remain disabled.
+
+An **admission** is a conservative reserved work unit, not a completed answer.
+Provider-operation counters count authorized attempts (which might fail before
+network transmission), not confirmed billable requests. Broad project lists may
+need no embedding. Input/output/thinking tokens and actual monetary cost are
+different units: these limits are not exact financial spending caps. Retain
+provider quotas, spend controls, authentication and monitoring. All processes
+sharing the ledger must use the same approved limit configuration.
+
+Daily/monthly reservations are never refunded after failures, timeouts, cancelled
+requests, or uncertain outcomes. A 504 does not release a durable concurrency slot
+while its synchronous worker is still running. Normal worker completion releases
+only the in-flight row, not spent counters. Release/storage failures leave a slot
+reserved and prevent further over-admission. Crashed-worker rows have no automatic
+expiry: conservative operator recovery is necessary. Budget exhaustion returns
+sanitized 429; disabled, busy, missing/corrupt/unwritable storage, invalid schemas,
+and exhausted durable concurrency return sanitized 503. Public `/health` and
+`/ready` retain their existing behavior; readiness checks the index, not paid
+provider or ledger availability. Structured request logs include fixed usage
+failure categories, never database paths, SQL exceptions, or credentials.
+
+Every ledger transaction validates its supported schema version, table/column metadata,
+primary-key indexes, types, defaults, NOT NULL and CHECK constraints. Supported
+DDL is compared as tokens, ignoring formatting, comments and identifier case;
+unexpected tables, indexes, triggers, foreign keys or schema changes are rejected.
+Existing invalid storage is never recreated or repaired automatically.
+
+Validation also checks integer, nonnegative counters, canonical UTC period and
+reservation identifiers, daily/monthly accounting totals, the admission-date
+watermark, and active reservations against their cumulative counters. Lowering
+configured limits does not invalidate previously admitted work. SQLite integrity
+and accounting validation run inside the same transaction as admission, so a
+concurrent writer cannot change the checked state before the reservation.
+
+SQL work per transaction is bounded to 1,000,000 virtual-machine steps, including
+integrity checks and historical accounting validation. Exceeding this resource
+budget fails closed without spending or resetting counters. Large valid ledgers
+may eventually need a reviewed validation-budget or storage-design change; do
+not delete accounting history to bypass the guard. This bounds SQL execution
+work, not filesystem I/O latency or a wall-clock deadline.
+
+`/health` indicates process liveness; `/ready` indicates index/application
+readiness. Neither establishes paid-chat availability. A separate operator-facing
+paid-chat availability check is recommended for ledger validity, emergency state,
+remaining allowances and capacity, without contacting Gemini or revealing counts
+publicly. Intentional emergency disable and budget exhaustion should not trigger
+crash recovery or restart loops. These endpoint semantics are unchanged.
+
+### Authorized operator procedure
+
+Provision a private persistent directory, owned by the backend UID (10001 in the
+image), before initialization. The directory must be writable for SQLite rollback
+journals; the database is created with mode 0600. Do not place it under `/app`,
+`data/index`, a temporary filesystem, or a release artifact. No `.env` file is read
+by these operator commands; supply the absolute path explicitly:
+
+```sh
+python -B -m src.usage_admin --database /var/lib/ai-portfolio-assistant/usage.sqlite3 init
+python -B -m src.usage_admin --database /var/lib/ai-portfolio-assistant/usage.sqlite3 status
+```
+
+Initialization exclusively creates a new database and starts disabled. It refuses
+to overwrite an existing file. Runtime opens with `mode=rw`: missing or invalid
+storage never silently produces a fresh budget. Do not automate reinitialization
+on startup. After authorized review of authentication, quotas and storage only:
+
+```sh
+python -B -m src.usage_admin --database /var/lib/ai-portfolio-assistant/usage.sqlite3 enable
+```
+
+Emergency disable is durable, atomic and requires no provider credential:
+
+```sh
+python -B -m src.usage_admin --database /var/lib/ai-portfolio-assistant/usage.sqlite3 disable
+```
+
+There is no HTTP admin endpoint. Disable prevents admissions and SDK operations
+authorized after its commit; it cannot recall an already-authorized/in-flight
+provider call. Revoke provider credentials or stop the service when immediate
+external containment is required. Treat operator command failure as unresolved
+and verify status. Do not print environment variables or pass credentials in URLs.
+
+After disabling, stop **all** worker processes and verify no workers remain before
+clearing abandoned in-flight reservations:
+
+```sh
+python -B -m src.usage_admin --database /var/lib/ai-portfolio-assistant/usage.sqlite3 clear-inflight --confirm-workers-stopped
+```
+
+Recovery requires the disabled state and explicit operator confirmation. It
+removes in-flight rows only and never refunds counters. The confirmation is an
+operator assertion, not automatic proof that workers stopped. Re-enable only
+after recovery and a review of uncertain charges. Never delete the database or
+restore an older counter snapshot to regain allowance.
+
+### Deployment requirements and limitations
+
+This supports **one backend instance** with a durable local filesystem; multiple
+local processes can share that file with identical limits. Storage persistence is
+an operator/deployment requirement, not inferred from a pathname. Render's default
+ephemeral filesystem does not satisfy it: provision and verify a persistent mount
+separate from the read-only code/index, including ownership, journal access,
+backup/recovery and restart/redeploy survival. Do not bake any database into the
+Docker image. The allowlisted context includes ledger code, never runtime state.
+
+Do not deploy independent SQLite files across replicas or assume network-mounted
+SQLite provides reliable locking. Multiple independent backend instances require
+a shared transactional database/admission service and coordinated recovery;
+otherwise global limits multiply. Old backups, deleted storage, forward clock
+changes, operator mistakes and host/root compromise remain risks. A restored or
+replaced ledger needs reconciliation before paid work is enabled. Schema upgrades
+require explicit operator-reviewed migration; runtime never repairs or migrates.
+
+### Version 2 migration and internal session storage
+
+Version 1 retains the original `control`, `periods` and `active` tables. New
+initialization still creates a disabled version 1 ledger. Runtime continues to
+validate and support complete version 1 ledgers for existing paid usage; session
+methods require version 2. Neither startup nor HTTP requests upgrade storage.
+Partial upgrades, unsupported versions and altered constraints fail closed.
+
+Version 2 adds `sessions` and `session_events` without changing existing tables:
+
+- Sessions have an internal UUID4 identifier, a unique 32-byte SHA-256 token
+  digest, creation and absolute expiry timestamps, and revoked/verified flags.
+  Raw bearer tokens, conversations, fingerprints and provider credentials are
+  never accepted as session-record fields. Digest generation from a future
+  cryptographically random token is the responsibility of a future trusted
+  issuance component; this phase does not generate public tokens.
+- Events have a UUID4 identifier, a foreign key to the session, and an admission
+  timestamp. An index on `(session_id, admitted_at, id)` supports future atomic
+  rolling-window accounting. The expiry index supports bounded cleanup.
+- UTC timestamps are integer Unix seconds. Expiry is exclusive. Session/event
+  identities, timestamp ranges, flags, lifetime relationships, digest types,
+  unique constraints, foreign keys and required indexes are validated. Foreign
+  key enforcement is enabled on every application connection.
+
+**Do not migrate while any application workers are active.** The confirmation
+flag is an operator assertion, not proof that processes stopped. The operator
+procedure is:
+
+1. Disable paid operations with the existing `usage_admin disable` command.
+2. Stop and independently verify the shutdown of **all** backend workers,
+   including timed-out requests whose underlying workers may still run.
+3. Take a private, consistent backup using SQLite's backup API or SQLite CLI
+   `.backup`, verify it opens and validates, and record the schema version and
+   accounting state. Retain any recovery material outside release artifacts.
+   Do not copy a live SQLite file while ignoring its journal or WAL.
+4. Run the explicit migration against the persistent database:
+
+   ```sh
+   python -B -m src.usage_admin --database /var/lib/ai-portfolio-assistant/usage.sqlite3 migrate-v2 --confirm-workers-stopped
+   ```
+
+5. Verify operator status and accounting preservation before starting workers.
+   Migration leaves paid usage disabled. Review existing authentication, quotas
+   and recovery prerequisites before any separate decision to enable it.
+
+The migration validates version 1 and all accounting invariants under one
+`BEGIN IMMEDIATE` transaction, requires disabled state, adds the new schema,
+sets `user_version=2`, and validates the complete result before commit. Counters,
+emergency state and active reservations are preserved. Abandoned reservations
+still require the separate authorized recovery procedure; migration never clears
+them. Any SQL, validation or commit failure rolls back. Do not retry by deleting
+or reinitializing storage. Investigate a failed command while usage stays
+disabled. No down-migration is provided. Restoring a backup requires all workers
+stopped and reconciliation of subsequent activity; an older snapshot must never
+be used to refund admissions.
+
+Internal `UsageLedger` methods create records, look up an unexpired/non-revoked
+record by digest, revoke a record, record an event, and inspect bounded recent
+events. Lookup exposes verification status and is **not authorization**; event
+recording additionally requires a verified session and checks its lifetime and
+revocation atomically. A recent-events result is capped at 1,000 records and must
+not be used as an exact rolling-limit count. Future admission logic must check
+and reserve atomically in the same database transaction. These methods neither
+admit Gemini operations nor replace bearer authentication or global budgets.
+There are no session HTTP endpoints, cookies, or public-chat changes.
+
+Cleanup is never run during paid admission or startup. Begin with a provisional
+24-hour retention after absolute expiry, review operational/privacy needs, and
+schedule explicit disabled maintenance with all workers stopped:
+
+```sh
+python -B -m src.usage_admin --database /var/lib/ai-portfolio-assistant/usage.sqlite3 cleanup-sessions --confirm-workers-stopped --retention-seconds 86400 --limit 100
+```
+
+Each call removes at most the configured batch of expired sessions and cascades
+only their events. It never changes global counters or active chat reservations
+and never refunds admissions. Retention accepts 0–31,536,000 seconds; batches
+accept 1–1,000 records. Inspect status and repeat explicitly if needed. Revoked
+but unexpired records remain until their absolute expiry plus retention. Secure
+backup retention must also be managed; SQL deletion does not guarantee forensic
+erasure. Monitor storage growth: the existing SQL validation-work budget also
+applies to sessions/events, and excessive history fails closed rather than being
+silently skipped. Cleanup cannot bypass validation of corrupt or oversized
+storage; such cases require a reviewed offline recovery/design change.
+
+The same single-persistent-instance assumptions apply to version 2. Multiple
+local processes may share the file; replicas with separate files do not share
+budgets or session state. Do not assume network filesystem locking is safe.
+Multi-instance deployment needs a shared transactional store and coordinated
+migration/maintenance. No operational database is migrated by tests.
+
+### Internal anonymous session issuance (disabled by default)
+
+`POST /internal/sessions` is a **trusted gateway/operator-only** endpoint, not an
+anonymous browser API. It accepts exactly an empty JSON object (`{}`), requires
+the existing backend bearer credential, and returns HTTP 201 with only `token`
+and `expires_at` (UTC Unix seconds). The token is created with
+`secrets.token_urlsafe(32)` (256 random bits); only its SHA-256 digest is stored.
+There is no token recovery endpoint: losing a response does not refund issuance
+or reveal the previous token. Do not retry automatically after an uncertain
+result. No cookies are set and `/chat` authentication is unchanged. A session
+token is not a backend bearer credential and cannot invoke paid chat.
+
+All responses on this route carry `Cache-Control: no-store`. Tokens are never
+put in URLs, response headers, request logs or database error messages. Request
+bodies are limited to 256 bytes while reading, regardless of Content-Length,
+with a five-second upload deadline. Unknown fields, client-chosen tokens, IDs,
+expirations, verification claims and query strings are rejected. Requests with
+an `Origin` header are rejected: a trusted server-to-server gateway must hold
+the backend credential privately, omit browser Origin forwarding, and never
+expose its credential or these token responses through a public proxy. Existing
+explicit staging CORS restrictions still apply. Configure gateway/APM logging
+to omit Authorization and issuance response bodies; application code cannot
+control logging performed by other infrastructure.
+
+Configuration (ordinary settings; the existing `STAGING_AUTH_TOKEN` is secret):
+
+| Setting | Default | Supported range / condition |
+| --- | --- | --- |
+| `SESSION_ISSUANCE_ENABLED` | `false` | Explicit `true` requires valid enabled staging bearer authentication |
+| `SESSION_LIFETIME_SECONDS` | `14400` | 1–86400; absolute lifetime, never sliding |
+| `SESSION_ISSUANCE_MINUTE_LIMIT` | `10` | 1–10000 issuances in the preceding 60 seconds |
+| `SESSION_ISSUANCE_DAY_LIMIT` | `100` | 1–10000 issuances in the preceding 86400 seconds |
+| `SESSION_MAX_LIVE` | `500` | 1–10000 unexpired, non-revoked sessions, including existing records |
+
+Missing enable configuration disables the route (404). Invalid configuration
+fails startup without echoing supplied values; it never falls back to enabled
+issuance. These thresholds are provisional, not approved production limits.
+The existing process-local authenticated request budget also applies and can
+reject earlier; it supplements, rather than replaces, durable issuance limits.
+No forwarding header, cookie, browser identity or IP is used for these limits.
+
+Version 3 is required for issuance. It adds a separate `issuance_control` table
+and `issuance_events` audit table with a time index, preserving all version 2
+records. Audit rows deliberately have no cascading session foreign key so
+revocation or session cleanup cannot reset rolling allowances. Timestamps and
+identifiers, the singleton shutdown control, watermark and supported schema
+constraints/indexes are strictly validated. Clock rollback behind the last
+issuance fails closed. Periods are `(now-window, now]`; requests at exactly the
+window boundary no longer count. Live-session checks, rolling counts and both
+new inserts occur under the same bounded `BEGIN IMMEDIATE` transaction, with no
+network work inside it. No Gemini counters, provider-attempt counts, active chat
+reservations or paid shutdown state are changed by issuance.
+
+For a reviewed version 2 database, first disable paid operations, stop and
+independently verify **all** workers are stopped, take and verify a consistent
+private backup, and follow the migration safeguards above. Then an authorized
+operator may run:
+
+```sh
+python -B -m src.usage_admin --database /var/lib/ai-portfolio-assistant/usage.sqlite3 migrate-v3 --confirm-workers-stopped
+python -B -m src.usage_admin --database /var/lib/ai-portfolio-assistant/usage.sqlite3 issuance-status
+```
+
+Migration validates version 2 before and version 3 after its changes, and rolls
+back on failure. It preserves session records, usage accounting, active
+reservations and paid shutdown state, and starts the **independent issuance
+control disabled**. Versions 1 and 2 remain supported for their existing
+operations; neither requests nor startup migrate them. Do not restore old
+snapshots or delete audit rows to regain allowance.
+
+Emergency issuance shutdown is durable and requires no Gemini credentials:
+
+```sh
+python -B -m src.usage_admin --database /var/lib/ai-portfolio-assistant/usage.sqlite3 disable-issuance
+```
+
+`enable-issuance` is a separate authorized operator action, refused while the
+paid shutdown control is disabled. It is insufficient by itself: the explicit
+configuration and bearer authentication must also permit issuance. Paid
+emergency disable always blocks issuance, even if its independent control is
+enabled. Disabling issuance alone does not alter paid controls or existing
+session records. Like paid shutdown, it blocks operations authorized after its
+commit; it cannot retract an already-committed response. Disabled state survives
+restarts. There is no HTTP administration endpoint.
+
+New sessions are always **unverified**. They cannot record admission events,
+and session credentials are not accepted by `/chat`. Future trusted bot
+verification must validate provider evidence server-side and bind successful
+verification to the stored session before any future atomic paid admission.
+No fake verification, trusted visitor-IP assumption or public chat activation
+is implemented here. Until those controls and gateway abuse protections are
+reviewed, keep issuance disabled and do not expose it directly to visitors.
+
+Durable limits assume one persistent backend instance (or local workers sharing
+the same SQLite file and approved limits). Separate replicas multiply limits;
+ephemeral storage loses them. Issuance audit rows are retained and are **not**
+removed by session cleanup. Monitor growth: the existing validation-work guard
+fails closed on oversized history. A future reviewed retention migration must
+preserve shutdown, clock and rolling-window guarantees; no audit pruning or
+automatic repair is introduced here. Forward clock changes, privileged storage
+tampering, stolen gateway credentials and old-backup restores remain risks.
+
+SQLite's configured busy wait bounds lock contention, not a stalled filesystem
+syscall. Existing HTTP deadlines still supervise chat workers; storage/worker
+failures can reduce availability deliberately. Budget counters grow by accounting
+period, not by message; active rows are bounded by concurrency in normal operation.
+No Docker build, provider request or cloud action is required for the offline suite.
+
+### Internal atomic session admission adapter (disabled by default)
+
+`src.session_admission.admitted_session(settings, scope)` is an internal worker
+context manager, **not an HTTP endpoint**. No existing route calls it; `/chat`
+keeps its existing gateway/global-ledger behavior and successful response schema.
+There is no anonymous public chat, browser cookie or frontend integration.
+Enabling the adapter configuration alone does not expose any session route.
+
+The explicit trusted contract is a POST HTTP ASGI scope containing exactly one
+`Authorization: Bearer <gateway credential>` header and exactly one
+`X-Portfolio-Session: <session token>` header. The session token must be the
+canonical, unpadded base64url encoding of 32 random bytes (43 characters).
+Duplicate, comma-combined, malformed, unknown or missing credentials fail closed.
+Cookie/query identities and caller-supplied IDs, verification/expiration claims
+are not used. Query strings and browser Origin headers are rejected. Forwarding
+headers are not trusted or used for identity. A future gateway must hold the
+backend credential server-side and avoid logging either sensitive header.
+
+Configuration:
+
+| Setting | Default | Condition |
+| --- | --- | --- |
+| `SESSION_ADMISSION_ENABLED` | `false` | Explicit valid boolean; true requires enabled staging bearer authentication |
+| `SESSION_ADMISSION_MINUTE_LIMIT` | `3` | 1–10000 admitted chats per rolling 60 seconds |
+| `SESSION_ADMISSION_HOUR_LIMIT` | `12` | 1–10000 admitted chats per rolling 3600 seconds |
+
+Missing enable configuration disables the adapter. Invalid flags or limits fail
+configuration validation without echoing their supplied values. Limits are
+provisional. Neither issuance enable nor any session header enables admission.
+Sessions issued in this phase remain unverified, so they cannot use this path.
+There is no production verification shortcut or operator HTTP verification API.
+
+The existing version 3 schema is sufficient: no migration, table or index change
+is made. `UsageLedger.reserve_session` opens one bounded `BEGIN IMMEDIATE`
+transaction, validates the complete schema/accounting state, checks global
+emergency disable, validates the stored verified/non-revoked session and absolute
+expiry, and checks both indexed rolling windows. It then uses the same global
+reservation logic as ordinary chat for UTC daily/monthly quotas, durable
+concurrency, the admission clock watermark and counter increments. A session
+event is inserted before the same transaction commits. Its event ID is the new
+global reservation ID. Any failure rolls back all changes: global rejection
+creates no session admission and session rejection spends no global allowance.
+
+Window membership is `(now-window, now]`. Admission uses a single UTC second for
+both session windows and global period identifiers. A clock rollback behind the
+session's latest event fails closed. Existing session events also count, making
+limits conservative. Restart and multiple local workers sharing the same file
+do not reset allowances; different sessions still compete for global capacity.
+
+After commit, the adapter installs the existing paid-operation context. Query
+embedding and generation attempts continue through `paid_call`, with durable
+attempt accounting, emergency checks and existing deadline diagnostics. No SQLite
+transaction is held during a provider operation. Exit releases only durable
+concurrency; session/global admission counters and attempt counters are never
+refunded after provider errors, timeouts or uncertain results.
+
+Expiration/revocation is checked at admission, under the same write lock as
+accounting. A racing revocation either commits first and denies admission, or
+commits after an already-admitted operation. Expiration, revocation or authorized
+session cleanup does not cancel, refund or invalidate a committed reservation.
+Its remaining provider attempts may proceed, subject to existing global
+emergency/deadline checks. Global emergency disable blocks subsequent attempts;
+it cannot recall an already-running provider call. New admissions always recheck
+session state. Cleanup never releases active global reservations. Deleting an
+expired session also deletes its events, but the unknown/expired identity cannot
+admit again and global counters remain spent. Trusted operators must not recreate
+old identities or restore older snapshots to regain allowance.
+
+This adapter must be entered inside the actual synchronous worker and retained
+until that worker exits, including after an HTTP deadline response. It checks
+available diagnostics before admission; `paid_call` continues enforcing them.
+It does not create an HTTP deadline supervisor or process-local worker lease by
+itself. Any future internal route must explicitly preserve existing JSON/body
+validation, rate limits, non-blocking concurrency admission, deadline supervision,
+sanitized responses and worker-owned cleanup. No such route is added here.
+
+Remaining work includes real server-side bot-verification evidence bound to a
+session, a reviewed gateway route, and independently established trusted visitor
+identity before any IP-based control. Hosting must provide private gateway
+secrets, HTTPS and persistent local SQLite storage. Separate-instance replicas
+require shared transactional storage; separate files multiply limits. Full
+validation retains the SQL work guard and can fail closed on excessive history.
+Forward clock jumps, privileged tampering, unsafe recovery and old backups remain
+operational risks. No public activation instructions are provided by this phase.
+
+### Durable trusted-IP engine (internal only, disabled by default)
+
+`src.ip_admission.admitted_identity(settings, scope, identity)` supplements the
+existing session adapter with durable per-identity limits. It is not an HTTP
+route. No handler creates a trusted IP or calls this adapter; `/chat`, issuance,
+browser behavior and public access remain unchanged. An ordinary HTTP caller
+cannot select an identity through headers, cookies or JSON. Do not integrate
+this path until hosting-specific proxy trust and a gateway route are reviewed.
+
+The third argument must be a `TrustedIP` object constructed by trusted server
+code **after independently establishing the visitor identity**. This type is an
+internal trust contract, not cryptographic proof that an input was trustworthy.
+The constructor validates an IP literal; it cannot establish proxy authenticity.
+No code reads X-Forwarded-For, X-Real-IP, CF-Connecting-IP or other client-selected
+identity headers. Existing gateway bearer and verified-session authentication
+remain mandatory. Missing identity or key fails closed without falling back to
+session-only or global-only admission on this path. The older session-only
+adapter remains a separate internal interface, not an HTTP fallback.
+
+Normalization uses Python `ipaddress`: IPv4 and IPv6 literals only, no ports,
+CIDRs, scope/zone identifiers, whitespace, ambiguous leading-zero IPv4 or lists.
+IPv6 spelling/case aliases normalize to packed address bytes; IPv4-mapped IPv6
+normalizes to IPv4. Exact IPv6 addresses are counted, not subnets or fingerprints.
+IP changes can evade per-address limits, while shared NATs can produce false
+positives. Session/global limits remain necessary.
+
+Privacy uses HMAC-SHA256 with a domain separator over family and normalized
+packed address. Only the 32-byte pseudonym, admission timestamp and internal
+event identifier are persisted. IP objects have a redacted representation; raw
+addresses are not logged or included in errors. Raw addresses and packed bytes
+exist transiently in trusted process memory. These pseudonyms are still linkable
+visitor data, not anonymization. A compromised key permits IP guessing, especially
+over the small IPv4 space. Keep the key separate from database backups.
+
+| Setting | Default | Requirements |
+| --- | --- | --- |
+| `IP_ADMISSION_ENABLED` | `false` | Valid explicit boolean; true requires enabled session admission and staging authentication |
+| `IP_RATE_HMAC_KEY` | unset | Secret: exactly 32 cryptographically random bytes, encoded as 43 canonical unpadded base64url characters |
+| `IP_ADMISSION_MINUTE_LIMIT` | `10` | 1–10000 admitted chats per rolling 60 seconds |
+| `IP_ADMISSION_DAY_LIMIT` | `60` | 1–10000 admitted chats per rolling 86400 seconds |
+
+Provision the secret through an operator secret manager/runtime environment, not
+Git, command arguments, images, URLs or browser source. Length validation cannot
+prove key entropy: operators must use a cryptographic random generator. Missing
+or invalid keys deny the enabled path; invalid supplied configuration fails
+startup without echoing secrets. The settings representation hides the key.
+Limits are provisional and are not monetary caps or production-approved values.
+
+Version 4 adds `ip_control` (a singleton key check and admission clock watermark)
+and `ip_events` (UUID4 ID, HMAC identity, UTC admission time), indexed by
+`(identity, admitted_at, id)`. There is deliberately no session foreign key:
+session deletion/expiration, cookie deletion, and cleanup cannot reset IP limits.
+All supported tables, constraints, types, keys, indexes and accounting state
+remain strictly validated; missing/partial/corrupt storage is never recreated.
+The release-context allowlist includes the new source modules, never a ledger
+or secret. No image build or deployment is required for this phase.
+
+Migration requires a complete valid version 3 database, durable paid shutdown,
+all workers stopped and independently verified, and a verified consistent backup
+following the existing maintenance procedure. The operator must supply the
+chosen `IP_RATE_HMAC_KEY` privately in the process environment. The CLI never
+loads `.env`. The explicit command is:
+
+```sh
+python -B -m src.usage_admin --database /var/lib/ai-portfolio-assistant/usage.sqlite3 migrate-v4 --confirm-workers-stopped
+```
+
+Migration validates version 3, installs the extra schema transactionally, records
+only a domain-separated HMAC key check, sets version 4, and validates before
+commit. Failure rolls back. Existing counters, sessions, session/issuance history,
+emergency controls and active reservations are preserved. No admission is enabled
+by migration. Versions 1–3 remain supported for existing functions, but the
+identity-aware path requires version 4. Neither requests nor startup migrate it.
+
+Session validity and both session windows, identity windows, global daily/monthly
+budgets, and durable concurrency are checked under the **same** bounded
+`BEGIN IMMEDIATE` transaction. Success inserts session and IP events with the
+global reservation ID and commits once. Any failure rolls back all writes.
+Windows are exactly `(now-window, now]`, including the rolling 24-hour limit;
+calendar midnight does not reset it. All workers sharing the file see the same
+allowances. Timestamps use UTC integer seconds; boundaries are evaluated at that
+resolution. Clock rollback behind the last identity admission fails closed.
+No transaction remains open during embedding/generation. Provider attempts,
+deadline checks, global emergency disable and no-refund rules remain in force.
+Expiration/revocation after a committed admission has the same semantics as the
+session adapter: it cannot refund or recall already-admitted work.
+
+Changing the configured key fails the stored key check; it cannot silently
+create fresh budgets. Transparent key rotation is **not implemented** because
+old HMAC identities cannot be re-keyed without raw addresses. A future reviewed
+rotation design must enforce overlapping old/new windows or stop admissions for
+at least the longest window and use an explicit maintenance migration preserving
+history and clock safeguards. Until then retain the same protected key; suspected
+compromise requires emergency shutdown and reviewed recovery. Never edit the key
+check, delete events or restore old counters to bypass a mismatch.
+
+No IP event pruning is implemented. Retain accounting for at least the full
+24-hour window; deleting sessions never prunes these rows. Limit backup access
+and retention as well. Monitor growth: existing full validation and its SQL-work
+guard can eventually fail closed on excessive history. A reviewed bounded
+retention operation preserving the clock watermark and rolling-window guarantees
+is needed before sustained high-volume deployment. Ordinary SQL deletion would
+not guarantee forensic erasure from backups/journals.
+
+Hosting remains responsible for private secrets, HTTPS, a persistent filesystem,
+safe recovery and an independently justified identity source/proxy chain.
+Separate SQLite files across replicas multiply limits; multiple instances need
+shared transactional storage. These engine tests establish no production proxy
+trust. HTTP integration, visitor-IP extraction, real bot verification and public
+activation remain deferred.
+
+### Backend bot verification — provisional, disabled by default
+
+`POST /internal/verified-sessions` is a separate internal server-to-server route.
+It requires existing staging bearer authentication, explicit bot verification
+enablement and enabled session issuance configuration. No browser access, CORS
+permission, cookies, frontend integration or public chat is added. The old
+`POST /internal/sessions` still issues unverified sessions with its original
+contract; `/chat` and the session/IP admission adapters retain their behavior.
+Neither an unverified session nor a browser `verified=true` claim can access
+verified-session admission.
+
+The new request is exactly `{"proof":"<opaque provider token>"}`. Bodies are
+limited to 4096 bytes while streaming, with a five-second upload deadline and
+strict JSON content type/UTF-8 parsing. Duplicate fields, malformed JSON, extra
+fields, query parameters, Origin headers, compressed bodies and ambiguous
+content lengths are rejected. Proofs must contain 1–2048 printable non-whitespace
+ASCII characters. No client IDs, expiry, verification flags or forwarded-IP
+identity are accepted. The route is hidden from OpenAPI. A boundary outside CORS
+also denies browser preflight permission for this route.
+
+Configuration (all new paths remain off unless explicitly configured):
+
+| Setting | Default | Policy |
+| --- | --- | --- |
+| `BOT_VERIFICATION_ENABLED` | `false` | True requires valid staging authentication and session issuance configuration |
+| `BOT_PROVIDER_SECRET` | unset | Server-only secret; required when enabled, excluded from settings representations |
+| `BOT_ALLOWED_HOSTNAMES` | empty | Explicit comma-separated canonical DNS hostnames; no wildcards, URLs or ports |
+| `BOT_EXPECTED_ACTION` | `portfolio_session` | Fixed expected action, never taken from the request |
+| `BOT_MAX_AGE_SECONDS` | `300` | 1–300; provisional local age policy |
+| `BOT_TIMEOUT_SECONDS` | `5` | 0.01–10; overall asynchronous provider-operation deadline |
+| `BOT_ATTEMPTS_MINUTE` | `10` | 1–1000 durable proof claims per rolling 60 seconds |
+| `BOT_ATTEMPTS_DAY` | `100` | 1–1000 durable proof claims per rolling 86400 seconds |
+| `BOT_MAX_CONCURRENT` | `2` | 1–4 local operations and durable pending claims across workers sharing the ledger |
+
+No real credentials or environment values are supplied by this phase. Missing
+required configuration fails closed; disabled construction creates no provider
+client and performs no network work. Existing global paid and independent
+issuance emergency shutdowns both block verification claims and finalization.
+
+`src/bot_verification.py` isolates the provisional Cloudflare Turnstile protocol.
+The adapter uses the fixed HTTPS Siteverify endpoint with certificate validation,
+no environment proxies, no redirects and zero retries. HTTPX connection/read/write
+timeouts are two seconds (pool wait 0.1 seconds); the additional overall deadline
+covers response streaming and parsing. Response bodies are capped at 8192 bytes,
+without trusting Content-Length. The request explicitly sends `Accept-Encoding:
+identity`; unsolicited compressed responses remain rejected. HTTP clients
+close after each operation. Tests inject `httpx.MockTransport` and block external
+network access.
+
+Acceptance requires explicit boolean success, an exactly allowlisted hostname,
+the configured action, a UTC `challenge_ts` within the configured age (inclusive
+boundary, no future timestamps), and no provider-reported errors. Missing,
+duplicate, malformed, non-finite or unexpected JSON fields are rejected. The only
+optional response fields accepted are empty `error-codes`, bounded string
+`cdata`, and an informational `metadata` object. Neither cdata nor metadata is
+trusted as authorization; metadata is never persisted or logged. The adapter has
+been checked against official provider documentation and verified in one
+controlled local test. Review future provider changes, current terms, and privacy
+requirements before production use. A successful challenge
+is an anti-automation signal, not proof of a unique human.
+
+#### Version 5 replay ledger and migration
+
+Version 5 adds `verification_claims`, indexed by creation time, with:
+
+- A unique SHA-256 proof digest (primary key); raw proof tokens are never stored.
+- A unique server-generated request UUID and digest binding to the authenticated
+  gateway credential. The request ID is not supplied by the browser.
+- UTC creation time and one of `pending`, `failed`, or `issued`.
+- A session digest only for issued claims. No provider secret or response body.
+
+Strict schema metadata/DDL/index checks, physical integrity checks and accounting
+validation extend to these records. Claims deliberately have no cascading session
+foreign key: cleanup cannot make a used proof reusable. Initialization remains
+version 1; supported older versions remain usable for existing operations.
+Verified issuance requires version 5. Startup and HTTP never migrate or recreate
+storage.
+
+For an existing version 4 ledger, follow the existing private consistent-backup
+procedure, durably disable paid operations, stop and independently verify **all**
+backend workers have stopped, then use the explicit operator command:
+
+```sh
+python -B -m src.usage_admin --database /var/lib/ai-portfolio-assistant/usage.sqlite3 migrate-v5 --confirm-workers-stopped
+```
+
+The migration needs no provider or Gemini credentials and never loads `.env`.
+It validates version 4, adds the schema and version marker in one transaction,
+validates version 5, and commits. Failure rolls back. Global budgets, session/IP
+records, issuance history, both emergency states and active reservations are
+preserved. Migration does not enable verification or paid usage. No automatic
+down-migration exists; never restore old counters or proof history to regain
+allowances.
+
+#### Issuance lifecycle and failure handling
+
+After authentication and bounded request validation, the service acquires a
+non-blocking process-local verification slot. A short SQLite transaction validates
+storage, shutdown controls and issuance availability, enforces durable attempt
+windows/pending capacity, and inserts a unique pending claim. It commits **before**
+contacting the provider. All workers sharing the file enforce the same limits;
+ordinary requests never wait in an unbounded verification queue.
+
+Following successful provider validation, a second transaction rechecks claim
+ownership/state, proof age, shutdown controls and all issuance/live-session limits.
+It atomically creates a verified session, records issuance, and marks the claim
+issued. Session entropy remains 256 bits; only its digest is stored. The raw token
+is returned once to the authenticated internal caller with `Cache-Control:
+no-store`. Absolute session lifetime is unchanged. No Gemini budgets, attempts or
+concurrency reservations are consumed by verification.
+
+Failures create no session. Invalid proofs are sanitized 403; exhausted limits
+return 429; provider/network/storage failures return sanitized 503 or 504. There
+are no automatic verification retries. Claims remain consumed after failures,
+success, cancellation and restarts. Database finalization failure requires a
+fresh proof; a lost successful response does not refund issuance or allow token
+recovery. Raw provider responses, proofs and secrets are never put in logs,
+URLs, public errors or response headers. External gateway/APM logging must also
+be configured to avoid sensitive headers and bodies.
+
+The service normally marks unsuccessful pending claims failed. If that update
+cannot commit, a fixed storage-category warning is logged and the claim remains
+pending, retaining its durable capacity and replay protection. Crashed or stuck
+workers are not cleared automatically. After disabling paid operations and
+independently stopping **all** workers, the authorized operator may run:
+
+```sh
+python -B -m src.usage_admin --database /var/lib/ai-portfolio-assistant/usage.sqlite3 fail-pending-verifications --confirm-workers-stopped
+```
+
+This marks pending claims failed, never deletes them or refunds attempt windows,
+and leaves paid shutdown enabled. The flag is an operator assertion, not proof
+that workers stopped. A failure remains unresolved until checked. No public admin
+endpoint is provided.
+
+Claims are retained indefinitely in this phase. No pruning, proof reuse, automatic
+repair or counter reset is implemented. Plan reviewed privacy/retention controls
+before sustained deployment; existing bounded full validation can eventually deny
+operations on excessive history. Provider deadlines do not bound stalled filesystem
+I/O, nor recall requests already accepted upstream. Async transport cancellation
+assumes the supported client cooperates; arbitrary injected code cannot be forcibly
+terminated. Persistent single-instance/local-worker storage assumptions remain.
+
+The implemented Next.js gateways privately submit proofs using scoped server
+credentials, validate same-origin/CSRF boundaries, and set a secure HttpOnly
+session cookie without exposing tokens to browser JavaScript. Chat uses the
+session/IP-protected internal route with no legacy fallback. The local composition
+has passed a controlled live test; public deployment remains disabled. Provider/browser metadata collection,
+legal basis, notice, accessibility and retention require review; no GDPR compliance
+claim is made. Leave public access disabled.
+
+### Session chat service — HTTP integration blocked by ingress trust
+
+`src/session_chat.py` provides the in-process service used by the separate,
+disabled-by-default HTTP adapter for `POST /internal/session-chat`. The loopback
+local runner explicitly composes that adapter and has passed a controlled live
+test. The normal production entry point has no approved visitor-identity resolver
+and remains fail closed. A shared
+staging bearer, ASGI peer field, forwarded header, JSON IP, or caller-selected
+digest does not establish that trust. Production HTTP integration is outstanding;
+this phase must not be represented as a verified public/session HTTP endpoint.
+
+`SESSION_CHAT_ENABLED` defaults to `false`. Only the exact string `true` permits
+internal execution; invalid spellings fail configuration validation. Enabled
+configuration additionally requires existing staging authentication and enabled
+session/IP admission configuration. This does not change or enable
+`BOT_VERIFICATION_ENABLED`, `SESSION_ISSUANCE_ENABLED`, `SESSION_ADMISSION_ENABLED`,
+`IP_ADMISSION_ENABLED`, the frontend `CHAT_ENABLED` flag or any environment file.
+
+Trusted application code can construct `SessionChatService` using the application's
+settings, shared `ChatControls`, FastAPI application, `ChatRequest` model and
+`_chat_worker`. Its `run` method accepts a gateway ASGI scope, an asynchronous
+stream of body bytes and an explicit `TrustedIP` object. This is not an ASGI route
+or callable mounted on the server. No current application handler invokes it.
+The object's type is an internal contract, not proof of safe network identity:
+the future caller must establish identity through a separately authenticated,
+reviewed ingress/transport before constructing it.
+
+The service requires a POST-shaped scope, exactly one existing gateway bearer
+and canonical `X-Portfolio-Session` token, JSON content type, no query string or
+browser Origin, and absent/identity content encoding. Unknown, expired, revoked
+or unverified sessions fail closed. Missing identities, raw IP strings, identity
+dictionaries and all forwarded-header claims fail closed without a fallback.
+Body validation reuses the strict existing `ChatRequest` (only `message`, at most
+1000 characters, nonblank). Duplicate JSON fields and malformed UTF-8/JSON are
+rejected without echoing content. Existing streamed body limits and the overall
+chat deadline also bound upload and worker-pool admission.
+
+The internal service invokes the existing `ChatProtectionMiddleware` supervisor
+with a private `/chat` selector solely to reuse body/rate/deadline/capacity logic.
+It does **not** call the application router, issue an HTTP request to `/chat`, or
+fall back to legacy admission. It supplies a private worker callback that always
+enters `admitted_identity`. Caller state is discarded so leases and diagnostics
+cannot be supplied through the input scope. The same `ChatControls` must be used
+to share process-local capacity with legacy requests.
+
+The shared synchronous `_chat_worker` is the former `/chat` pipeline with its
+admission context supplied by the caller. Legacy `/chat` still supplies its
+original global admission. Session chat supplies the identity-aware adapter:
+verified-session checks and rolling limits, trusted-IP limits, global day/month
+budgets, durable concurrency and emergency controls are checked and reserved in
+one SQLite transaction before any query embedding or generation. Provider work
+runs outside database transactions. Version 5 is supported; no schema change or
+new migration is introduced by this service.
+
+Routing, hybrid retrieval, portfolio context, generation model/configuration,
+transport timeouts, finish-reason validation and provider-attempt guards are
+shared. Success remains `{"answer":"..."}`. Internal results contain a status,
+sanitized JSON body and headers including `Cache-Control: no-store`. A 64 KiB
+serialized response cap protects this new internal interface. Tokens, credentials
+and visitor messages are not logged or passed to generation as authentication
+metadata. The service never returns session tokens.
+
+The existing asynchronous supervisor returns sanitized 504 on deadline expiry
+without waiting for synchronous provider work. Durable and process-local slots
+remain held until the actual worker and operation exit. Cancellation similarly
+stops subsequent phases and retains slots during remaining work. Admissions and
+provider-attempt counters are never refunded. Global emergency disable still
+blocks subsequent provider attempts; session expiration/revocation after an
+already-committed admission retains the previously documented no-refund semantics.
+
+Offline tests use temporary version 5 ledgers, explicit synthetic trusted objects,
+mocked Gemini responses and in-process streams. Passing those tests establishes
+the internal service behavior, **not a production visitor-IP trust boundary**.
+Before an HTTP endpoint can be added, design and verify a distinct trusted-identity
+transport, prevent spoofing/direct-backend bypass, review credential scoping and
+legacy `/chat` isolation, and preserve all existing supervision/body/auth controls.
+The Next.js gateway and chatbot remain unchanged. Public chat remains disabled.
+
+### Capability authentication — isolated opt-in transition
+
+`CAPABILITY_AUTH_ENABLED` defaults to `false`; only the exact string `true`
+enables the new authorization mode. This phase configures no live credentials,
+does not change environment files, and does not enable any chat, issuance or
+verification feature. The session-chat HTTP route remains unregistered and no
+signed visitor-identity assertions are implemented.
+
+With the mode **off**, existing credential compatibility remains; legacy execution
+now also requires the explicit policy described below. When staging
+authentication is enabled, the staging bearer still protects legacy HTTP routes
+and the existing verified-issuance/internal session workflows. This compatibility
+mode is not credential isolation and must not be mistaken for production readiness.
+Scoped credentials do not authenticate these old workflows while the mode is off.
+
+With the mode **on**, `src/auth.py` enforces this immutable exact method/path
+policy, without wildcard routes, credential fallback or caller-selected scopes:
+
+| Method/path | Required capability / credential |
+| --- | --- |
+| `POST /internal/verified-sessions` | `verified_session_issuance` / `VERIFIED_SESSION_AUTH_TOKEN` |
+| `POST /internal/session-chat` | `session_chat` / `SESSION_CHAT_AUTH_TOKEN`; disabled reserved-path HTTP adapter |
+| `POST /chat` | `legacy_staging` / existing `STAGING_AUTH_TOKEN` |
+| `POST /internal/sessions` | `legacy_staging` / existing `STAGING_AUTH_TOKEN` |
+| `GET /docs`, `/redoc`, `/openapi.json` | `legacy_staging`, only if those routes are registered |
+| Existing GET/HEAD health/readiness paths | Existing authentication exemption and routing behavior preserved |
+| Any other HTTP method/path | Denied, including HTTP administration |
+
+Administrative authority remains the local CLI and operating-system/storage
+permissions. There is no HTTP administrator capability. Capability mode does not authorize legacy execution by itself. The separate
+production deployment policy now denies it; authenticated staging requires an
+explicit legacy opt-in, as documented below. Do not expose a legacy credential through a
+production gateway or assume CORS/network obscurity prevents legacy access.
+
+New server-only settings:
+
+| Setting | Default | Requirement |
+| --- | --- | --- |
+| `CAPABILITY_AUTH_ENABLED` | `false` | Exact `true`/`false`; enabled mode requires valid enabled staging authentication and both scoped credentials |
+| `VERIFIED_SESSION_AUTH_TOKEN` | unset | Independent 43–256 character URL-safe bearer credential |
+| `SESSION_CHAT_AUTH_TOKEN` | unset | Independent 43–256 character URL-safe bearer credential |
+| `VERIFIED_SESSION_CREDENTIAL_ID` | `verified-session-v1` | Non-secret operator-assigned credential identity |
+| `SESSION_CHAT_CREDENTIAL_ID` | `session-chat-v1` | Non-secret operator-assigned credential identity |
+
+Credential IDs accept 1–64 lowercase letters/digits/underscore/hyphen, starting
+with a letter or digit. IDs must be distinct and cannot use reserved
+`legacy-staging`. Credentials for all three capabilities must be different.
+Generate secrets from at least 32 cryptographically random bytes; syntax checks
+alone cannot establish entropy.
+Missing required credentials, malformed values, duplicates or ambiguous IDs fail
+configuration validation without echoing values. Secrets are excluded from
+settings representations and must remain in server runtime secret storage, never
+browser source, URLs, Git, release contexts or logs. No `.env.example` or actual
+environment file needs to be read to run offline tests.
+
+Authorization accepts exactly one bearer header with the existing strict syntax
+and constant-time comparison. The route selects the expected capability and
+credential, not a gateway ID or capability header. Trailing slashes, encoded path
+aliases, unsupported methods, nonempty queries and unreviewed mounted path prefixes
+do not inherit authorization or trigger a credential fallback. An empty query
+delimiter may be indistinguishable from no query in ASGI; it never changes the
+credential required for the received canonical route. Client-side normalization
+that occurs before a request reaches ASGI cannot be detected here; the resulting
+method/path must still satisfy the same exact capability policy.
+
+Successful authentication mints a frozen `AuthenticatedPrincipal`: bearer
+mechanism, one typed capability, non-secret credential identity, exact method/path
+and server request context. It retains a credential fingerprint and private
+request marker, not the raw credential. It is not accepted from HTTP JSON or
+headers, not serialized into visitor responses, and not a signed identity claim.
+Supplying an issuance/legacy principal to session chat, changing request context,
+changing credentials, or constructing a lookalike object does not grant authority.
+Request-bound principals are a trusted-code interface, not protection against
+arbitrary malicious Python running inside the backend process.
+
+Verified issuance revalidates the issuance principal inside its service before
+claiming proofs or contacting the mocked/provisional provider. New-mode durable
+proof bindings use credential identity/capability/fingerprint; preexisting proof
+rows are not reset. The unique proof digest still prevents reuse across mode or
+credential changes. No schema migration is required.
+
+Internal `SessionChatService` requires the chat credential/capability when the
+mode is on. Its private supervisor carries the original authenticated request
+context rather than authorizing its internal `/chat` selector as a legacy route.
+No staging Authorization header is synthesized. The admission adapters recheck
+chat authorization before their existing session/IP/global reservation. TrustedIP,
+verified-session checks, request validation, deadlines, worker leases, durable
+quotas, emergency shutdown and provider-attempt guards remain required. A scoped
+chat credential alone does not establish visitor identity or make HTTP exposure
+safe.
+
+Authentication failures are generic `Unauthorized.` responses (normally 401;
+unusable injected configuration fails closed with 503), with no expected-token
+details. Existing feature gates can still return 404 before authorization. Health
+checks remain available. Unsupported methods in scoped mode are denied by policy,
+not granted a capability merely to reach a later 405. Shared authenticated request
+budgets and existing sanitized operational logging remain in force.
+
+Rotation is operator-controlled configuration replacement and coordinated process
+restart/redeployment. Use a new credential ID for each scoped credential version;
+old credentials and principals are rejected by the new configuration. There is
+no implicit previous-key overlap, token discovery header, public rotation endpoint
+or automatic failback to compatibility mode. Existing processes retain their old
+configuration until stopped. Emergency revocation therefore requires disabling
+paid operations and stopping/replacing all relevant workers; already-authorized
+provider work cannot be recalled. Deleting proof/admission rows is not rotation.
+Rolling back code/configuration must not silently disable capability mode on an
+exposed service or reset ledger history.
+
+Before future HTTP session chat: separately implement and verify signed identity
+transport and hosting-specific IP provenance, isolate or disable production legacy
+chat, and update the Next.js server-only credential mapping. No frontend change,
+identity assertion, production activation or new HTTP route is part of this phase.
+
 ## Production Docker package
 
 The multi-stage Dockerfile pins Python `3.11.18-slim-bookworm` and uv `0.10.2`
@@ -893,7 +1790,7 @@ without source builds or managed Python downloads. uv and its cache remain in
 the builder, not the runtime image. BuildKit and registry/package access are
 needed for a first build. No host dependency installation is required.
 
-The final image contains `/app/.venv`, thirteen runtime Python modules,
+The final image contains `/app/.venv`, allowlisted runtime/operator Python modules,
 `pyproject.toml`, `uv.lock`, `release.sha256`, `data/portfolio.md`, and the
 validated `data/index/portfolio.json`. Ingestion, evaluators, tests, local
 configuration, and credentials are not packaged. It runs as UID/GID `10001`,
@@ -960,7 +1857,7 @@ local_container="$(docker run --detach --read-only \
 docker port "$local_container" 8080/tcp
 ```
 
-The ephemeral host port avoids port 8000 and existing containers. After startup,
+The ephemeral host port avoids occupied host ports and existing containers. After startup,
 use the address printed by `docker port` with `curl --fail --max-time 5` for
 `/health` and `/ready`; expected results are HTTP 200 with the existing health
 body and `{"status":"ready"}` respectively. Only these endpoints are needed
@@ -985,7 +1882,7 @@ No real `.env` is copied, changed, or required inside the image.
 
 Once a Docker daemon is available, the following uses a fake key and disables
 all container networking. It invokes no chat requests, cannot reach Gemini,
-and leaves existing containers and port 8000 alone:
+and leaves existing containers and services alone:
 
 ```sh
 smoke_container="$(docker run --detach --network none --read-only \
@@ -1062,27 +1959,28 @@ and dependencies, not a promise of identical image bytes across architectures.
 
 ## Frontend Integration
 
-The assistant is integrated into a separate Next.js AI Engineer portfolio.
+The Next.js portfolio uses same-origin `POST /api/chat/session` for a genuine
+Turnstile proof, then `POST /api/chat` for a message. The trusted server gateway
+calls FastAPI `POST /internal/verified-sessions` and
+`POST /internal/session-chat`. Backend session tokens stay in the Secure,
+HttpOnly, SameSite=Strict `__Host-portfolio-chat` cookie; gateway credentials and
+Gemini keys never enter browser JavaScript.
 
-The frontend sends questions to:
-
-```http
-POST /chat
-```
-
-The portfolio keeps the backend URL in:
-
-```env
-NEXT_PUBLIC_AI_ASSISTANT_API_URL=http://127.0.0.1:8000
-```
-
-The Google API key remains exclusively on the backend and is never exposed through the browser.
+For the verified local setup, use **https://localhost:3443**. The HTTPS launcher
+reuses the gateway factories, connects only to `127.0.0.1:8001`, and derives the
+explicit development identity from its loopback socket. Do not configure a
+browser-visible backend URL or use legacy `/chat`. The retired public API-URL
+variable is not used by this flow. Production ingress identity remains unresolved;
+ordinary production gateway defaults remain disabled.
 
 ---
 
 ## Current Status
 
-The core system is functional locally.
+The core system is functional locally. The operator confirmed a controlled live
+Cloudflare/session/RAG/Gemini test that answered a question about BundesHost on
+2026-11-14. This is not evidence of production deployment or production ingress
+verification.
 
 Completed:
 
@@ -1121,3 +2019,116 @@ https://github.com/timoajayi/ai-engineer-portfolio
 **Timothy Ajayi**
 
 AI Engineer focused on machine learning, LLM applications, RAG, agentic AI, backend systems, and MLOps.
+
+### Durable gateway assertion replay protection (internal only)
+
+Schema 6 adds permanent, atomic consume-once gateway assertion claims, separate
+from version 5 bot-proof claims. Only an intact result from the replay service's
+configured verifier instance is eligible. Re-signing the same issuer/audience/
+key-ID/nonce does not reset consumption. The SQLite transaction commits before
+any future downstream admission or execution; errors and lost responses do not
+refund claims. This does not enable a route, create TrustedIP, or authorize paid
+work. Existing scoped authentication, session/IP/global admission, emergency
+shutdown and provider guards remain separate requirements.
+
+The explicit local operator command is `migrate-v6` with
+`--confirm-workers-stopped`, after disabling paid usage, independently confirming
+all workers stopped, validating host time and taking a consistent private backup.
+No constructor, startup or HTTP request migrates storage. Initialization remains
+version 1; existing operations support their previous versions and validated
+version 6. There is no automatic repair, refund or replay cleanup.
+
+See [gateway replay and version 6 migration](docs/gateway-replay-v6.md) for the
+schema, exact digest, prerequisites, failure/rollback procedure, clock assumptions,
+permanent retention, storage limits and required future HTTP ordering. See also
+[assertion protocol](docs/gateway-assertions-v1.md). A synchronized trusted clock,
+persistent local storage and one coordinated ledger remain deployment requirements.
+Replay protection is disconnected from public access; no activation settings were
+changed in this phase.
+
+### Authenticated internal session-chat pipeline
+
+`src/authenticated_session_chat.py` composes existing scoped session-chat bearer
+authentication, exact signed request binding, durable schema 6 replay consumption,
+an explicitly injected trusted identity resolver and `SessionChatService`.
+An immutable server-controlled authority mapping binds credential identity to
+issuer, audience, signing key IDs, capability and ingress policy. No request
+header chooses this mapping. No new HTTP route or public activation is added.
+
+Replay is consumed before resolver/session admission; downstream rejection,
+timeout, cancellation and lost responses do not refund it. The existing atomic
+session/IP/global limits and provider guards remain authoritative. One monotonic
+deadline includes preprocessing, replay and resolver work and is inherited by the
+existing worker; blocked synchronous work keeps its capacity until actual exit.
+
+There is no default identity resolver. A signed IP alone is insufficient:
+trusted server composition must supply independently verified ingress evidence
+bound to the authenticated assertion context before TrustedIP can be created.
+Offline tests use explicit synthetic fixture evidence only. **This phase does not
+prove production visitor-IP provenance and does not activate public chat.**
+
+See [internal pipeline contract](docs/authenticated-session-chat.md) for interfaces,
+resolver obligations, deadline propagation, failure ordering, offline tests and
+remaining hosting/HTTP integration requirements. Existing real configuration,
+frontend, cookies, credentials, schema migrations and endpoint registration remain
+unchanged.
+
+### Disabled internal HTTP session-chat adapter
+
+`POST /internal/session-chat` now has an outer ASGI adapter that delegates to the
+existing authenticated pipeline. No FastAPI/OpenAPI route is registered. It
+remains disabled by default through `SESSION_CHAT_HTTP_ENABLED=false`; only exact
+`true` passes configuration, and existing scoped/session/IP feature requirements
+remain mandatory. Enabling the flag without a matching server-composed pipeline
+and independently trusted resolver fails startup. There is no environment-selectable
+fixture resolver, key loader or trusted-header fallback.
+
+The contract requires one Authorization bearer, canonical `X-Portfolio-Session`,
+`X-Portfolio-Gateway-Assertion` and exact `Content-Type: application/json`. It
+rejects browser origins, forwarded identity headers, ambiguous framing, aliases,
+queries, compression and malformed JSON/Unicode. Message validation reuses
+ChatRequest, preserving its 1,000-codepoint limit. Body bytes are bounded while
+reading and verified unchanged; upload is bounded to five seconds and the
+remaining overall deadline. The same monotonic deadline covers upload through
+response preparation, with existing worker-owned cleanup and no replay refunds.
+
+See [HTTP adapter contract](docs/session-chat-http.md) for limits, failure behavior,
+offline tests and composition requirements. **Production visitor-IP trust remains
+unverified; public chat is not activated.** Legacy `/chat` retains only its explicitly authenticated staging behavior and is
+denied by default production policy; production network configuration still needs review. No real
+configuration, frontend, operational database or cloud resource is changed.
+
+
+### Production identity boundary and legacy execution policy (Phase 6B-4G-3)
+
+The default `BACKEND_DEPLOYMENT_POLICY=production` and `LEGACY_CHAT_ENABLED=false`
+deny legacy `/chat` before admission or provider execution. Production policy
+rejects any enabled legacy flag. Deliberate isolated staging requires exact
+`staging` policy, explicit legacy opt-in and valid enabled staging authentication.
+Legacy and secure HTTP chat cannot be enabled together. Anonymous local legacy
+execution and `/chat/` redirect compatibility are intentionally removed. Scoped
+credentials never fall back to the legacy credential. Real environment files
+were not changed.
+
+Vercel/Railway remain unverified candidates. Neither forwarding headers, network
+peer nor a gateway signature proves original visitor provenance. Both production
+identity implementations remain absent and fail closed. No public feature was
+activated. See [the trust-boundary review](docs/production-trust-boundary.md) for
+the diagram, delegated identity model, evidence gates, configuration review,
+operator compatibility impact and deployment blockers. The Dockerfile's explicit
+module list and `.dockerignore` now match the allowlisted release manifest. A
+network-disabled scratch export verified Docker's actual context filtering and
+release checksums with all 18 index chunks. A full application image build, runtime
+verification and vulnerability scan remain outstanding; no production deployment
+has been tested.
+
+### Isolated local assistant runner
+
+See [secure local development](docs/local-development.md) for the loopback HTTPS
+launcher and dedicated FastAPI composition. They reuse the existing gateway,
+assertion/replay, verified-session, admission and RAG code without changing
+production defaults or frontend source. Init creates separate private development
+state with both emergency switches disabled. Live provider use requires separate
+explicit authorization. Mocked cross-language integration and one controlled
+live Cloudflare/session/RAG/Gemini question about BundesHost have been verified
+locally; production deployment has not been tested.

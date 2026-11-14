@@ -17,6 +17,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH" \
     PORT=8080 \
+    BACKEND_DEPLOYMENT_POLICY=production \
+    LEGACY_CHAT_ENABLED=false \
     RAG_INDEX_PATH=/app/data/index/portfolio.json
 WORKDIR /app
 # Runtime dependencies are already built in /app/.venv; packaging tools and
@@ -34,7 +36,10 @@ COPY --chmod=0444 pyproject.toml uv.lock release.sha256 ./
 COPY --chmod=0444 src/__init__.py src/api.py src/chunking.py src/config.py \
     src/diagnostics.py src/embeddings.py src/index_store.py src/knowledge.py \
     src/provider.py src/query_expansion.py src/query_router.py src/reliability.py \
-    src/retrieval.py ./src/
+    src/retrieval.py src/usage.py src/usage_admin.py src/legacy_policy.py \
+    src/auth.py src/identity.py src/session_admission.py src/ip_admission.py \
+    src/bot_verification.py src/session_chat.py src/gateway_assertions.py \
+    src/gateway_replay.py src/authenticated_session_chat.py src/session_chat_http.py ./src/
 COPY --chmod=0444 data/portfolio.md ./data/portfolio.md
 COPY --chmod=0444 data/index/portfolio.json ./data/index/portfolio.json
 # Validate release bytes and source/index compatibility without a network or API key.

@@ -1,0 +1,128 @@
+{
+  "description": "PUBLIC TEST-ONLY keys and data. Never use these keys in any deployment.",
+  "policy": {
+    "issuer": "portfolio-gateway",
+    "audience": "portfolio-backend",
+    "ipSource": "offline-ingress-v1",
+    "lifetimeSeconds": 30,
+    "currentKey": {
+      "kid": "gateway-key-1",
+      "secret_hex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "notBefore": 1799999900,
+      "notAfter": 1800003600
+    }
+  },
+  "now": 1800000000,
+  "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "session_token": "ERERERERERERERERERERERERERERERERERERERERERE",
+  "vectors": [
+    {
+      "name": "ipv4",
+      "visitor_ip_input": "192.0.2.42",
+      "body_base64": "eyJtZXNzYWdlIjoiV2hhdCBpcyBCdW5kZXNIb3N0PyJ9",
+      "assertion": "eyJ0eXAiOiJwb3J0Zm9saW8tZ2F0ZXdheS1hc3NlcnRpb24tdjEiLCJhbGciOiJIUzI1NiIsImtpZCI6ImdhdGV3YXkta2V5LTEifQ.eyJ2IjoxLCJpc3MiOiJwb3J0Zm9saW8tZ2F0ZXdheSIsImF1ZCI6InBvcnRmb2xpby1iYWNrZW5kIiwic2NvcGUiOiJzZXNzaW9uOmNoYXQiLCJtZXRob2QiOiJQT1NUIiwicGF0aCI6Ii9pbnRlcm5hbC9zZXNzaW9uLWNoYXQiLCJpYXQiOjE4MDAwMDAwMDAsImV4cCI6MTgwMDAwMDAzMCwianRpIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsInNlc3Npb25fc2hhMjU2IjoiYjU5ZTY1YzQwMmE2MjllNmM1YjI4MzU1Yzc2MjhhMTAwMjI2MmI1NWI0M2E1MmY5NDFjMDI3NDBlM2JkZmFmYyIsImJvZHlfc2hhMjU2IjoiODNhMWVkODAzMjFiMDkxYTM1YzcwNWRlNzJlMDE4YTA3NzIwMjg2MzlhNTY2NzBkZTg4MjdkZWEyZjY1Mzg4YyIsInZpc2l0b3JfaXAiOiIxOTIuMC4yLjQyIiwiaXBfc291cmNlIjoib2ZmbGluZS1pbmdyZXNzLXYxIn0.FGdmL_JRc68aFLFg7QHm1yKiQeGJCafKYk6zoenYIBs",
+      "header": {
+        "typ": "portfolio-gateway-assertion-v1",
+        "alg": "HS256",
+        "kid": "gateway-key-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "portfolio-gateway",
+        "aud": "portfolio-backend",
+        "scope": "session:chat",
+        "method": "POST",
+        "path": "/internal/session-chat",
+        "iat": 1800000000,
+        "exp": 1800000030,
+        "jti": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+        "session_sha256": "b59e65c402a629e6c5b28355c7628a1002262b55b43a52f941c02740e3bdfafc",
+        "body_sha256": "83a1ed80321b091a35c705de72e018a0772028639a56670de8827dea2f65388c",
+        "visitor_ip": "192.0.2.42",
+        "ip_source": "offline-ingress-v1"
+      },
+      "signature_hex": "1467662ff25173af1a14b160ed01e6d722a241e18909a7ca624eb3a1e9d8201b"
+    },
+    {
+      "name": "ipv6",
+      "visitor_ip_input": "2001:0DB8:0000:0000:0000:0000:0000:0001",
+      "body_base64": "eyAibWVzc2FnZSI6ICJUb3VyaXNtIOKAlCBjYWbDqSIgfQo=",
+      "assertion": "eyJ0eXAiOiJwb3J0Zm9saW8tZ2F0ZXdheS1hc3NlcnRpb24tdjEiLCJhbGciOiJIUzI1NiIsImtpZCI6ImdhdGV3YXkta2V5LTEifQ.eyJ2IjoxLCJpc3MiOiJwb3J0Zm9saW8tZ2F0ZXdheSIsImF1ZCI6InBvcnRmb2xpby1iYWNrZW5kIiwic2NvcGUiOiJzZXNzaW9uOmNoYXQiLCJtZXRob2QiOiJQT1NUIiwicGF0aCI6Ii9pbnRlcm5hbC9zZXNzaW9uLWNoYXQiLCJpYXQiOjE4MDAwMDAwMDAsImV4cCI6MTgwMDAwMDAzMCwianRpIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsInNlc3Npb25fc2hhMjU2IjoiYjU5ZTY1YzQwMmE2MjllNmM1YjI4MzU1Yzc2MjhhMTAwMjI2MmI1NWI0M2E1MmY5NDFjMDI3NDBlM2JkZmFmYyIsImJvZHlfc2hhMjU2IjoiNzBkZmZhZTUzNGQ2ODJiMDA0OGM3MTViOTFjNzAwZjUwNmNiMzEyMjUzZGQzMTZlMjQzMjhlZDJmNjQ0OGZiMSIsInZpc2l0b3JfaXAiOiIyMDAxOmRiODo6MSIsImlwX3NvdXJjZSI6Im9mZmxpbmUtaW5ncmVzcy12MSJ9.ZXZxAs-5idfn7Z6RticcMjHzogUt9SJ5qcuUU7W_OHM",
+      "header": {
+        "typ": "portfolio-gateway-assertion-v1",
+        "alg": "HS256",
+        "kid": "gateway-key-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "portfolio-gateway",
+        "aud": "portfolio-backend",
+        "scope": "session:chat",
+        "method": "POST",
+        "path": "/internal/session-chat",
+        "iat": 1800000000,
+        "exp": 1800000030,
+        "jti": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+        "session_sha256": "b59e65c402a629e6c5b28355c7628a1002262b55b43a52f941c02740e3bdfafc",
+        "body_sha256": "70dffae534d682b0048c715b91c700f506cb312253dd316e24328ed2f6448fb1",
+        "visitor_ip": "2001:db8::1",
+        "ip_source": "offline-ingress-v1"
+      },
+      "signature_hex": "65767102cfb989d7e7ed9e91b6271c3231f3a2052df52279a9cb9453b5bf3873"
+    },
+    {
+      "name": "mapped",
+      "visitor_ip_input": "::ffff:192.0.2.42",
+      "body_base64": "eyJtZXNzYWdlIjoiU2FtZSBieXRlcyBtYXR0ZXIifQ==",
+      "assertion": "eyJ0eXAiOiJwb3J0Zm9saW8tZ2F0ZXdheS1hc3NlcnRpb24tdjEiLCJhbGciOiJIUzI1NiIsImtpZCI6ImdhdGV3YXkta2V5LTEifQ.eyJ2IjoxLCJpc3MiOiJwb3J0Zm9saW8tZ2F0ZXdheSIsImF1ZCI6InBvcnRmb2xpby1iYWNrZW5kIiwic2NvcGUiOiJzZXNzaW9uOmNoYXQiLCJtZXRob2QiOiJQT1NUIiwicGF0aCI6Ii9pbnRlcm5hbC9zZXNzaW9uLWNoYXQiLCJpYXQiOjE4MDAwMDAwMDAsImV4cCI6MTgwMDAwMDAzMCwianRpIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsInNlc3Npb25fc2hhMjU2IjoiYjU5ZTY1YzQwMmE2MjllNmM1YjI4MzU1Yzc2MjhhMTAwMjI2MmI1NWI0M2E1MmY5NDFjMDI3NDBlM2JkZmFmYyIsImJvZHlfc2hhMjU2IjoiMzQ5MjYxYzI4MTQ4MDlkNDc0ZGUyMzMxNDNmOWJjZWI5YzUwMzJjYmEyMWFkMjJhNGNjZTc4Nzg4NDYwYjU2ZSIsInZpc2l0b3JfaXAiOiIxOTIuMC4yLjQyIiwiaXBfc291cmNlIjoib2ZmbGluZS1pbmdyZXNzLXYxIn0.2AgQHwxPPwqiCW4Hj7XMY7ag4G7yva-G_Mx-Z4_bl-c",
+      "header": {
+        "typ": "portfolio-gateway-assertion-v1",
+        "alg": "HS256",
+        "kid": "gateway-key-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "portfolio-gateway",
+        "aud": "portfolio-backend",
+        "scope": "session:chat",
+        "method": "POST",
+        "path": "/internal/session-chat",
+        "iat": 1800000000,
+        "exp": 1800000030,
+        "jti": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+        "session_sha256": "b59e65c402a629e6c5b28355c7628a1002262b55b43a52f941c02740e3bdfafc",
+        "body_sha256": "349261c2814809d474de233143f9bceb9c5032cba21ad22a4cce78788460b56e",
+        "visitor_ip": "192.0.2.42",
+        "ip_source": "offline-ingress-v1"
+      },
+      "signature_hex": "d808101f0c4f3f0aa2096e078fb5cc63b6a0e06ef2bdaf86fccc7e678fdb97e7"
+    },
+    {
+      "name": "ipv6-compression",
+      "visitor_ip_input": "2001:db8:0:1:0:0:0:1",
+      "body_base64": "e30=",
+      "assertion": "eyJ0eXAiOiJwb3J0Zm9saW8tZ2F0ZXdheS1hc3NlcnRpb24tdjEiLCJhbGciOiJIUzI1NiIsImtpZCI6ImdhdGV3YXkta2V5LTEifQ.eyJ2IjoxLCJpc3MiOiJwb3J0Zm9saW8tZ2F0ZXdheSIsImF1ZCI6InBvcnRmb2xpby1iYWNrZW5kIiwic2NvcGUiOiJzZXNzaW9uOmNoYXQiLCJtZXRob2QiOiJQT1NUIiwicGF0aCI6Ii9pbnRlcm5hbC9zZXNzaW9uLWNoYXQiLCJpYXQiOjE4MDAwMDAwMDAsImV4cCI6MTgwMDAwMDAzMCwianRpIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsInNlc3Npb25fc2hhMjU2IjoiYjU5ZTY1YzQwMmE2MjllNmM1YjI4MzU1Yzc2MjhhMTAwMjI2MmI1NWI0M2E1MmY5NDFjMDI3NDBlM2JkZmFmYyIsImJvZHlfc2hhMjU2IjoiNDQxMzZmYTM1NWIzNjc4YTExNDZhZDE2ZjdlODY0OWU5NGZiNGZjMjFmZTc3ZTgzMTBjMDYwZjYxY2FhZmY4YSIsInZpc2l0b3JfaXAiOiIyMDAxOmRiODowOjE6OjEiLCJpcF9zb3VyY2UiOiJvZmZsaW5lLWluZ3Jlc3MtdjEifQ.BdMBHAlVqol5BY-BJYQe-BWt-4bp5lNF5P6oxR1wE6c",
+      "header": {
+        "typ": "portfolio-gateway-assertion-v1",
+        "alg": "HS256",
+        "kid": "gateway-key-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "portfolio-gateway",
+        "aud": "portfolio-backend",
+        "scope": "session:chat",
+        "method": "POST",
+        "path": "/internal/session-chat",
+        "iat": 1800000000,
+        "exp": 1800000030,
+        "jti": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+        "session_sha256": "b59e65c402a629e6c5b28355c7628a1002262b55b43a52f941c02740e3bdfafc",
+        "body_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "visitor_ip": "2001:db8:0:1::1",
+        "ip_source": "offline-ingress-v1"
+      },
+      "signature_hex": "05d3011c0955aa8979058f8125841ef815adfb86e9e65345e4fea8c51d7013a7"
+    }
+  ]
+}

@@ -13,8 +13,10 @@ from uuid import uuid4
 from starlette.responses import JSONResponse
 
 from src.config import Settings
-from src.diagnostics import ChatDiagnostics, current_diagnostics
+from src.diagnostics import ChatDiagnostics, ChatDeadlineExceeded, current_diagnostics
 from src.provider import ERROR_DETAIL
+from src.legacy_policy import legacy_path, legacy_execution_allowed, canonical_legacy_request
+from src.auth import authenticate, AuthorizationError
 
 
 logger = logging.getLogger("portfolio.api")
@@ -119,9 +121,13 @@ class CapacityLease:
 
 
 class ChatProtectionMiddleware:
-    def __init__(self, app, controls: ChatControls):
+    def __init__(self, app, controls: ChatControls, *, internal_authorization=None, internal_diagnostics=None, internal_session_chat=False):
         self.app = app
         self.controls = controls
+        self.internal_authorization = internal_authorization
+        self.internal_diagnostics = internal_diagnostics
+        # Private callback supervisor, never selected by ASGI headers or state.
+        self._internal_session_chat = internal_session_chat is True
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -129,14 +135,17 @@ class ChatProtectionMiddleware:
             return
 
         request_id = uuid4().hex
-        started = time.monotonic()
+        started = self.internal_diagnostics.started if self.internal_diagnostics is not None else time.monotonic()
         status = 500
         lease = None
         task = None
         diagnostics = None
         accept_response = True
         state = scope.setdefault("state", {})
+        state.pop('authenticated_principal', None)
         state["request_id"] = request_id
+        issuance = scope['path'].rstrip('/') == '/internal/sessions'
+        verification = scope['path'].rstrip('/') == '/internal/verified-sessions'
 
         async def tracked_send(message):
             nonlocal status
@@ -146,6 +155,9 @@ class ChatProtectionMiddleware:
                 message["headers"] = list(message.get("headers", [])) + [
                     (b"x-request-id", request_id.encode("ascii"))
                 ]
+                if issuance or verification or legacy_path(scope):
+                    message['headers'] = [(key, value) for key, value in message['headers']
+                                          if key.lower() != b'cache-control'] + [(b'cache-control', b'no-store')]
             await send(message)
 
         async def reject(code, detail, retry_after=None):
@@ -157,22 +169,115 @@ class ChatProtectionMiddleware:
             )
 
         try:
+            if verification and (not self.controls.settings.bot_verification_enabled
+                                 or not self.controls.settings.session_issuance_enabled
+                                 or not self.controls.settings.staging_auth_enabled):
+                await reject(404, 'Not found.')
+                return
+            if issuance and (not self.controls.settings.session_issuance_enabled
+                             or not self.controls.settings.staging_auth_enabled):
+                await reject(404, 'Not found.')
+                return
             # Default-deny all routes except public health checks. Future paid
             # endpoints inherit this gate without remembering a dependency.
             public_health = (scope["method"] in ("GET", "HEAD")
                              and scope["path"] in ("/health", "/ready"))
-            if self.controls.settings.staging_auth_enabled and not public_health:
-                if not staging_authorized(scope, self.controls.settings.staging_auth_token):
-                    await reject(401, "Unauthorized.")
+            if (self.controls.settings.staging_auth_enabled or self.controls.settings.capability_auth_enabled) and not public_health:
+                if self.controls.settings.capability_auth_enabled:
+                    try:
+                        if self.internal_authorization is None:
+                            principal = authenticate(self.controls.settings, scope)
+                        else:
+                            supplied, original, capability = self.internal_authorization
+                            principal = authenticate(self.controls.settings, original, required=capability, principal=supplied)
+                        state['authenticated_principal'] = principal
+                    except AuthorizationError as error:
+                        await reject(error.status, 'Unauthorized.')
+                        return
+                elif not staging_authorized(scope, self.controls.settings.staging_auth_token):
+                    await reject(401, 'Unauthorized.')
                     return
                 limited_status, retry = self.controls.authenticated_budget.check("authenticated")
                 if limited_status:
                     await reject(429, "Request limit exceeded. Please try again later.", retry)
                     return
 
+            if legacy_path(scope) and not self._internal_session_chat:
+                if not legacy_execution_allowed(self.controls.settings) or not canonical_legacy_request(scope):
+                    await reject(404, ERROR_DETAIL)
+                    return
+
+            if issuance or verification:
+                if scope['method'] != 'POST':
+                    await reject(405, 'Method not allowed.')
+                    return
+                if any(key.lower() == b'origin' for key, _ in scope.get('headers', [])):
+                    await reject(403, 'Request unavailable.')
+                    return
+                if scope.get('query_string'):
+                    await reject(400, 'Invalid request.')
+                    return
+                limit = 4096 if verification else 256
+                if verification:
+                    types = [v for k, v in scope.get('headers', []) if k.lower() == b'content-type']
+                    encodings = [v for k, v in scope.get('headers', []) if k.lower() == b'content-encoding']
+                    if (len(types) != 1 or types[0].split(b';')[0].strip().lower() != b'application/json'
+                            or encodings not in ([], [b'identity'])):
+                        await reject(415, 'Content type unavailable.')
+                        return
+                lengths = [v for k, v in scope.get('headers', []) if k.lower() == b'content-length']
+                if lengths and (len(lengths) != 1 or not lengths[0].isdigit()):
+                    await reject(400, 'Invalid request body length.')
+                    return
+                if lengths and (len(lengths[0]) > 20 or int(lengths[0]) > limit):
+                    await reject(413, 'Request body too large.')
+                    return
+                body = bytearray()
+                try:
+                    async with asyncio.timeout(5):
+                        while True:
+                            part = await receive()
+                            if part['type'] == 'http.disconnect':
+                                return
+                            chunk = part.get('body', b'')
+                            if len(body) + len(chunk) > limit:
+                                await reject(413, 'Request body too large.')
+                                return
+                            body.extend(chunk)
+                            if not part.get('more_body', False):
+                                break
+                except TimeoutError:
+                    await reject(408, 'Request body unavailable.')
+                    return
+                if verification:
+                    def unique_fields(pairs):
+                        if len(dict(pairs)) != len(pairs):
+                            raise ValueError()
+                        return dict(pairs)
+                    try:
+                        json.loads(body.decode('utf-8'), object_pairs_hook=unique_fields,
+                                   parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+                    except (ValueError, RecursionError):
+                        await reject(400, 'Invalid request body.')
+                        return
+                delivered = False
+                async def issuance_body():
+                    nonlocal delivered
+                    if not delivered:
+                        delivered = True
+                        return {'type': 'http.request', 'body': bytes(body), 'more_body': False}
+                    return await receive()
+                await self.app(scope, issuance_body, tracked_send)
+                return
+
             # Include the redirect alias so /chat/ cannot bypass protection.
             if scope["method"] == "POST" and scope["path"] in ("/chat", "/chat/"):
-                diagnostics = ChatDiagnostics(started, self.controls.settings.chat_deadline_seconds)
+                diagnostics = self.internal_diagnostics or ChatDiagnostics(started, self.controls.settings.chat_deadline_seconds)
+                try:
+                    diagnostics.check()
+                except ChatDeadlineExceeded:
+                    await reject(504, ERROR_DETAIL)
+                    return
                 state["chat_diagnostics"] = diagnostics
                 peer = scope.get("client")
                 # ASGI peer only. Forwarding-header trust belongs at the server.
@@ -308,3 +413,17 @@ class ChatProtectionMiddleware:
                 if status == 504 and diagnostics.stopped:
                     payload["provider_failure"] = "deadline"
             logger.info(json.dumps(payload))
+
+
+class VerifiedSessionBrowserBoundary:
+    """Outside CORS: no preflight or browser-origin access to verified issuance."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if (scope['type'] == 'http' and scope['path'].rstrip('/') == '/internal/verified-sessions'
+                and any(key.lower() == b'origin' for key, _ in scope.get('headers', []))):
+            await JSONResponse({'detail': 'Request unavailable.'}, status_code=403,
+                               headers={'Cache-Control': 'no-store'})(scope, receive, send)
+            return
+        await self.app(scope, receive, send)

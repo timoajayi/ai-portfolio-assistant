@@ -19,6 +19,7 @@ from unittest.mock import Mock, patch
 
 
 ISOLATED_MODULES = (
+    "src.main",
     "src.embeddings",
     "src.retrieval",
     "src.api",
@@ -53,7 +54,14 @@ class OfflineTestCase(unittest.TestCase):
         # Synthetic artifacts live only in temporary directories. Fixture
         # creation never calls ingestion or any embedding provider.
         self.temporary = self.stack.enter_context(TemporaryDirectory())
-        self.index_path = Path(self.temporary) / "portfolio.json"
+        self.index_path = Path(self.temporary) / "index" / "portfolio.json"
+        self.index_path.parent.mkdir()
+        self.usage_path = Path(self.temporary) / "state" / "usage.sqlite3"
+        self.usage_path.parent.mkdir()
+        from src.usage import UsageLedger
+        self.usage_ledger = UsageLedger(self.usage_path)
+        self.usage_ledger.initialize()
+        self.usage_ledger.set_disabled(False)
         from src.index_store import EMBEDDING_DIMENSIONS, make_payload, source_snapshot
         source = source_snapshot()
         self.vector = [1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 1)
@@ -61,8 +69,43 @@ class OfflineTestCase(unittest.TestCase):
         self.index_path.write_text(json.dumps(payload), encoding="utf-8")
 
         self.stack.enter_context(patch.dict(os.environ, {
+            "BACKEND_DEPLOYMENT_POLICY": "production",
+            "LEGACY_CHAT_ENABLED": "false",
             "GOOGLE_API_KEY": "offline-test-key-not-a-secret",
+            "USAGE_LEDGER_PATH": str(self.usage_path),
+            "USAGE_DAILY_LIMIT": "100",
+            "USAGE_MONTHLY_LIMIT": "1000",
+            "USAGE_MAX_CONCURRENT": "2",
+            "USAGE_SQLITE_BUSY_MS": "250",
             "STAGING_AUTH_ENABLED": "false",
+            "CAPABILITY_AUTH_ENABLED": "false",
+            "VERIFIED_SESSION_AUTH_TOKEN": "",
+            "SESSION_CHAT_AUTH_TOKEN": "",
+            "VERIFIED_SESSION_CREDENTIAL_ID": "verified-session-v1",
+            "SESSION_CHAT_CREDENTIAL_ID": "session-chat-v1",
+            "BOT_VERIFICATION_ENABLED": "false",
+            "BOT_PROVIDER_SECRET": "",
+            "BOT_ALLOWED_HOSTNAMES": "",
+            "BOT_EXPECTED_ACTION": "portfolio_session",
+            "BOT_MAX_AGE_SECONDS": "300",
+            "BOT_TIMEOUT_SECONDS": "5",
+            "BOT_ATTEMPTS_MINUTE": "10",
+            "BOT_ATTEMPTS_DAY": "100",
+            "BOT_MAX_CONCURRENT": "2",
+            "SESSION_ISSUANCE_ENABLED": "false",
+            "SESSION_ADMISSION_ENABLED": "false",
+            "SESSION_CHAT_ENABLED": "false",
+            "SESSION_CHAT_HTTP_ENABLED": "false",
+            "IP_ADMISSION_ENABLED": "false",
+            "IP_RATE_HMAC_KEY": "",
+            "IP_ADMISSION_MINUTE_LIMIT": "10",
+            "IP_ADMISSION_DAY_LIMIT": "60",
+            "SESSION_ADMISSION_MINUTE_LIMIT": "3",
+            "SESSION_ADMISSION_HOUR_LIMIT": "12",
+            "SESSION_LIFETIME_SECONDS": "14400",
+            "SESSION_ISSUANCE_MINUTE_LIMIT": "10",
+            "SESSION_ISSUANCE_DAY_LIMIT": "100",
+            "SESSION_MAX_LIVE": "500",
             "STAGING_AUTH_TOKEN": "",
             "STAGING_BUDGET_REQUESTS": "10",
             "STAGING_BUDGET_WINDOW_SECONDS": "60",
@@ -125,3 +168,25 @@ class OfflineTestCase(unittest.TestCase):
         # Suppress import-time indexing prints, not test runner output.
         with redirect_stdout(io.StringIO()):
             return importlib.import_module(name)
+
+
+    def authorize_legacy_staging(self, api, *, token=None, large_budget=True):
+        """Explicit authenticated test staging, never a production-policy bypass.
+
+        Old API/RAG tests exercised anonymous /chat. They now opt into its
+        deliberate staging contract and send a synthetic bearer. Security tests
+        retain explicit negative requests without default client headers.
+        """
+        from dataclasses import replace
+        from src.reliability import RateLimiter
+        settings = api.app.state.chat_controls.settings
+        token = token or settings.staging_auth_token or 'offline-staging-fixture-' + 'a' * 32
+        settings = replace(settings, backend_deployment_policy='staging', legacy_chat_enabled=True,
+                           staging_auth_enabled=True, staging_auth_token=token)
+        if large_budget:
+            settings = replace(settings, staging_budget_requests=10000)
+        api.settings = settings
+        api.app.state.chat_controls.settings = settings
+        api.app.state.chat_controls.authenticated_budget = RateLimiter(settings.staging_budget_requests,
+                                                                      settings.staging_budget_window_seconds, 1)
+        return {'Authorization': 'Bearer ' + token}

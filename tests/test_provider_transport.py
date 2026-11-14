@@ -208,7 +208,7 @@ class TransportPolicyTests(OfflineTestCase):
                 api = self.load("src.api")
                 embeddings = self.load("src.embeddings")
                 self.assertEqual(embeddings.create_embedding("Synthetic document"), self.vector)
-                with TestClient(api.app) as client:
+                with TestClient(api.app, headers=self.authorize_legacy_staging(api)) as client:
                     response = client.post("/chat", json={"message": "Docker?"})
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.json(), {"answer": "Offline transport answer."})

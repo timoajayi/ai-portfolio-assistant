@@ -10,7 +10,8 @@ class APITestCase(OfflineTestCase):
     def setUp(self):
         super().setUp()
         self.api = self.load("src.api")
-        self.http = self.stack.enter_context(TestClient(self.api.app))
+        self.legacy_headers = headers = self.authorize_legacy_staging(self.api)
+        self.http = self.stack.enter_context(TestClient(self.api.app, headers=headers))
         self.models.embed_content.reset_mock()
 
     def assert_generic_error(self, response, status=500):
