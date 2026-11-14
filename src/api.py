@@ -61,6 +61,11 @@ def get_generation_client():
 async def lifespan(app):
     app.state.rag_index = None
     validate_legacy_configuration(app.state.chat_controls.settings)
+    if (app.state.chat_controls.settings.session_chat_http_enabled
+            and app.state.session_chat_pipeline is None):
+        from src.production_chat import compose_production_chat
+        app.state.session_chat_pipeline = compose_production_chat(
+            app, app.state.chat_controls, ChatRequest, _chat_worker, os.environ)
     validate_http_configuration(app, app.state.chat_controls)
     try:
         app.state.rag_index = load_portfolio_index(settings.index_path)

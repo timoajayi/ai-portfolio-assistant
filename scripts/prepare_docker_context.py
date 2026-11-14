@@ -25,7 +25,7 @@ RUNTIME_FILES = (
     "src/session_chat.py",
     "src/auth.py", "src/legacy_policy.py",
     "src/gateway_assertions.py", "src/gateway_replay.py",
-    "src/authenticated_session_chat.py", "src/session_chat_http.py",
+    "src/authenticated_session_chat.py", "src/session_chat_http.py", "src/production_chat.py",
 )
 IMAGE_FILES = (
     "pyproject.toml", "uv.lock", *RUNTIME_FILES,

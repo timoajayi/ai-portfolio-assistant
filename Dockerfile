@@ -39,7 +39,7 @@ COPY --chmod=0444 src/__init__.py src/api.py src/chunking.py src/config.py \
     src/retrieval.py src/usage.py src/usage_admin.py src/legacy_policy.py \
     src/auth.py src/identity.py src/session_admission.py src/ip_admission.py \
     src/bot_verification.py src/session_chat.py src/gateway_assertions.py \
-    src/gateway_replay.py src/authenticated_session_chat.py src/session_chat_http.py ./src/
+    src/gateway_replay.py src/authenticated_session_chat.py src/session_chat_http.py src/production_chat.py ./src/
 COPY --chmod=0444 data/portfolio.md ./data/portfolio.md
 COPY --chmod=0444 data/index/portfolio.json ./data/index/portfolio.json
 # Validate release bytes and source/index compatibility without a network or API key.

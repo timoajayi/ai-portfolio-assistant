@@ -1,5 +1,7 @@
 # AI Portfolio Assistant
 
+Current production integration: see [Stage 1 Vercel / Render composition](docs/production-integration.md). Implementation is offline verified only; public activation and hosting validation remain pending. Older phase reports below are historical.
+
 A retrieval-augmented AI assistant that answers questions about my projects, technical skills, engineering experience, and current work using information grounded in my portfolio knowledge base.
 
 The project combines **hybrid retrieval, query routing, Google Gemini, and FastAPI** to provide concise, portfolio-specific answers while reducing unsupported responses.

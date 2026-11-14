@@ -34,6 +34,7 @@ src/**
 !src/gateway_replay.py
 !src/authenticated_session_chat.py
 !src/session_chat_http.py
+!src/production_chat.py
 !data/
 data/**
 !data/portfolio.md

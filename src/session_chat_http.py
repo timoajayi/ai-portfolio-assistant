@@ -59,7 +59,7 @@ class SessionChatHTTPAdapter:
         return posixpath.normpath('/' + path.replace('\\', '/').lstrip('/')) == PATH
 
     @staticmethod
-    def _framing(scope, limit):
+    def _framing(scope, limit, *, render_transport=False):
         raw_headers = scope.get('headers', [])
         if type(raw_headers) not in (list, tuple) or len(raw_headers) > 32:
             raise Rejected(400)
@@ -76,6 +76,11 @@ class SessionChatHTTPAdapter:
             headers.append((pair[0].lower(), pair[1]))
         if sum(len(k)+len(v) for k,v in headers) > 8192:
             raise Rejected(400)
+        # Render adds X-Forwarded-For for the gateway connection. Under the
+        # explicitly composed Render/Vercel policy it is transport metadata,
+        # discarded AFTER original header bounds/validation, never IP evidence.
+        if render_transport:
+            headers = [(k, v) for k, v in headers if k != b'x-forwarded-for']
         def values(name):return [v for k,v in headers if k == name]
         if values(b'origin') or any(values(k) for k in (b'x-forwarded-for', b'x-real-ip', b'cf-connecting-ip',
                                                      b'forwarded', b'x-identity-digest', b'x-visitor-ip')):
@@ -145,7 +150,9 @@ class SessionChatHTTPAdapter:
                 raise Rejected(400)
             if scope.get('method')!='POST':raise Rejected(405)
             limit=min(self._controls.settings.max_body_bytes,8192)
-            headers,length,assertion=self._framing(scope,limit)
+            from src.production_chat import VercelGatewayIdentity
+            headers,length,assertion=self._framing(scope,limit,
+                render_transport=type(pipeline._resolver) is VercelGatewayIdentity)
             # Clear caller state. A principal is minted only by the shared scoped
             # authenticator, before any body upload, parsing, replay or providers.
             request={**scope,'headers':headers,'state':{'request_id':uuid4().hex}}
